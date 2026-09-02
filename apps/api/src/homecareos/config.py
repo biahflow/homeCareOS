@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-5"
 
+    # Teto de custo por lote de extração (ex.: um PDF grande no fechamento de
+    # competência) e custo estimado de cada chamada de Vision, para reserva
+    # pessimista antes de cada chamada (ver `extraction/budget.py`).
+    extraction_max_cost_usd_per_batch: float = 5.0
+    extraction_cost_per_call_usd: float = 0.05
+
     # Limites de upload e renderização de PDF para conferência visual.
     max_upload_bytes: int = 32 * 1024 * 1024
     pdf_render_dpi: int = 200
