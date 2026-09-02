@@ -27,11 +27,24 @@ from pydantic import BaseModel, Field
 
 @runtime_checkable
 class PaginaDocumento(Protocol):
-    """O que este pacote consome de uma página de documento escaneado."""
+    """O que este pacote consome de uma página de documento escaneado.
 
-    numero: int
-    conteudo: bytes  # PNG
-    content_type: str
+    Membros somente-leitura (`@property`) e não atributos anotados: este pacote
+    só lê a página, nunca a escreve, e um Protocol com atributo anotado exige
+    que a implementação seja *gravável* — o que exclui um dataclass congelado.
+    `PageImage` (`intake/pdf.py`) é exatamente isso, e passou a satisfazer este
+    Protocol quando a Fase 2 ligou as duas trilhas.
+    """
+
+    @property
+    def numero(self) -> int: ...
+
+    @property
+    def conteudo(self) -> bytes:  # PNG ou JPEG
+        ...
+
+    @property
+    def content_type(self) -> str: ...
 
 
 class CategoriaProfissional(StrEnum):

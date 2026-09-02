@@ -53,6 +53,13 @@ indent-style = "space"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers --disable-warnings"
+markers = [
+  # Testes que exigem Postgres e MinIO de verdade (`docker compose up -d`).
+  # Eles se pulam sozinhos quando os serviços não respondem, para a suíte
+  # continuar utilizável sem container; a marca existe para poder selecioná-los
+  # (`-m integration`) ou excluí-los (`-m 'not integration'`) explicitamente.
+  "integration: requer Postgres e MinIO reais",
+]
 
 [tool.mypy]
 python_version = "3.12"

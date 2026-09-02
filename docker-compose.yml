@@ -54,6 +54,11 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://homecareos:homecareos@postgres:5432/homecareos
       S3_ENDPOINT_URL: http://minio:9000
+      # O Dockerfile instala o pacote com `--no-editable`, isto é, copiado para
+      # dentro do venv. Sem isto o volume de código abaixo não teria efeito
+      # nenhum e o `--reload` seria uma ilusão: o container seguiria rodando a
+      # cópia congelada na imagem.
+      PYTHONPATH: /app/src
     ports:
       - "${API_PORT:-8001}:8000"
     volumes:

@@ -23,3 +23,14 @@ class UnsupportedMediaTypeError(IntakeError):
 
 class InvalidDocumentError(IntakeError):
     """O documento tem o tipo certo mas está corrompido, vazio ou protegido por senha."""
+
+
+class IdempotencyConflictError(IntakeError):
+    """O `Idempotency-Key` já foi usado por um upload com outro número de páginas.
+
+    Reenvio idêntico colide em **todas** as páginas e é respondido com os
+    documentos já existentes. Colidir em apenas parte delas significa que a
+    mesma chave está sendo reaproveitada para um arquivo diferente — a chave
+    prometia "a mesma requisição", e devolver o resultado do upload anterior
+    como se fosse deste esconderia a troca.
+    """

@@ -21,7 +21,13 @@ class ExtractionProvider(Protocol):
 
     name: str
 
-    def extract(self, pagina: PaginaDocumento) -> ExtractionResult: ...
+    def extract(self, pagina: PaginaDocumento, documento_id: str | None = None) -> ExtractionResult:
+        """`documento_id` identifica o documento na chave do `RawResponseStore`.
+
+        Opcional porque `PaginaDocumento` não carrega identidade de documento
+        (ver `schema.py`); o pipeline de intake da Fase 2 passa o ID real.
+        """
+        ...
 
 
 class NullExtractionProvider:
@@ -35,7 +41,7 @@ class NullExtractionProvider:
 
     name = "null"
 
-    def extract(self, pagina: PaginaDocumento) -> ExtractionResult:
+    def extract(self, pagina: PaginaDocumento, documento_id: str | None = None) -> ExtractionResult:
         campos = EvolucaoProntuario(
             campos_ilegiveis=[
                 nome
@@ -62,8 +68,7 @@ def get_provider(
 
     Sem `anthropic_api_key`, devolve `NullExtractionProvider` — sem exceção,
     sem tentar falar com a rede. `raw_store` defaulta para
-    `InMemoryRawResponseStore`; a Fase 2 substitui por uma implementação em S3
-    (fora de escopo desta trilha).
+    `InMemoryRawResponseStore`; a Fase 2 passa `S3RawResponseStore`.
     """
     if not settings.anthropic_api_key:
         return NullExtractionProvider()
