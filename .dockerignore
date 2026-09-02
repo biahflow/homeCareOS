@@ -1,0 +1,5 @@
+# Aplica-se ao build do serviço `web` (context: raiz do repo).
+node_modules
+apps/web/.next
+apps/api/.venv
+.git

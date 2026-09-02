@@ -100,6 +100,22 @@ services:
       minio:
         condition: service_healthy
 
+  # Trilha do frontend. `NEXT_PUBLIC_API_URL` é inlinado no bundle em build
+  # time (Next.js), não em runtime — por isso não aparece em `environment:`
+  # aqui. O default do código (localhost:8001) já casa com `API_PORT`, e o
+  # navegador acessa a API pela porta publicada no host, não pela rede
+  # interna do compose.
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8001}
+    ports:
+      - "${WEB_PORT:-3001}:3000"
+    depends_on:
+      - api
+
 volumes:
   postgres-data:
   minio-data:

@@ -55,3 +55,26 @@ jobs:
 
       - name: pytest
         run: uv run pytest
+
+  web:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        # `ci` e não `install`: o lockfile é commitado e a CI precisa instalar
+        # exatamente o que ele fixa, sem reescrevê-lo silenciosamente.
+        run: npm ci
+
+      - name: lint
+        run: npm run lint -w apps/web
+
+      - name: build
+        run: npm run build -w apps/web

@@ -13,6 +13,7 @@ __pycache__/
 # Node / Next.js (trilha do frontend)
 node_modules/
 .next/
+next-env.d.ts
 
 # Editores e SO
 .DS_Store
