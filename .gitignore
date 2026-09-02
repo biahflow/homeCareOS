@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# Ambiente local
+.env
+
+# Node / Next.js (trilha do frontend)
+node_modules/
+.next/
+
+# Editores e SO
+.DS_Store
+.vscode/
+.idea/
+
+# Ambiente local
+.env
