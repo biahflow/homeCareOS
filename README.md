@@ -70,5 +70,10 @@ apps/
 ├─ api/     # FastAPI + SQLAlchemy + Alembic (Python 3.12, uv)
 └─ web/     # Next.js (trilha separada)
 docs/
+├─ adr/       # Decisões de arquitetura com impacto durável
 └─ features/  # Feature Contracts e artefatos de planejamento
 ```
+
+Um ADR (`docs/adr/NNNN-titulo.md`) registra escolha com impacto durável em
+arquitetura, operação, segurança ou custo — contexto, decisão, consequências e
+alternativas consideradas, incluindo o que foi descartado e por quê.
