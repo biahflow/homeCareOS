@@ -52,8 +52,13 @@ uv run mypy src
 uv run pytest
 ```
 
+Os testes marcados como `integration` falam com o Postgres de verdade: rode
+`alembic upgrade head` e `python -m homecareos.seed` (ou os serviços
+`api-migrate`/`api-seed` do Compose) contra o banco apontado por
+`DATABASE_URL` antes do `pytest`, senão as tabelas não existem.
+
 O mesmo conjunto roda no CI (`.github/workflows/quality.yml`), com Postgres 17
-como service container.
+como service container, migration e seed aplicados antes do `pytest`.
 
 ## Estrutura
 
