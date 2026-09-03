@@ -1,0 +1,62 @@
+[
+  {
+    "codigo": "UNIMED-AD-COREN-FORMATO",
+    "campo": "registro_coren",
+    "condicao": {"tipo": "formato", "regex": "COREN[-/ ]?[A-Za-z]{2}[\\s.:\\-]*\\d{4,7}[\\s.\\-]*([A-Za-z]{2,5})?"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Número do Coren fora do formato exigido pela operadora (UF e categoria explícitas).",
+    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-COREN-FORMATO desta mesma operadora, que ela endurece.",
+    "escopo": "operadora",
+    "ativo": false
+  },
+  {
+    "codigo": "UNIMED-AD-CARIMBO-LEGIVEL",
+    "campo": "carimbo_legivel",
+    "condicao": {"tipo": "se", "quando": {"tipo": "verdadeiro", "campo": "carimbo_presente"}, "entao": {"tipo": "verdadeiro", "campo": "carimbo_legivel"}},
+    "acao": "rejeitar",
+    "motivo_glosa": "Carimbo ilegível: a operadora devolve o documento em vez de apenas sinalizar.",
+    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-CARIMBO-LEGIVEL desta mesma operadora, que ela endurece.",
+    "escopo": "operadora",
+    "ativo": false
+  },
+  {
+    "codigo": "UNIMED-AD-ASSINATURA-RESPONSAVEL",
+    "campo": "assinatura_paciente_responsavel_presente",
+    "condicao": {"tipo": "verdadeiro"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Sem assinatura do paciente ou responsável, a operadora não aceita a comprovação da visita.",
+    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-ASSINATURA-RESPONSAVEL desta mesma operadora, que ela endurece.",
+    "escopo": "operadora",
+    "ativo": false
+  },
+  {
+    "codigo": "UNIMED-AD-DATA-COMPETENCIA",
+    "campo": "data_atendimento",
+    "condicao": {"tipo": "dentro_da_competencia"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Atendimento fora da competência do lote: a operadora glosa em vez de reprocessar.",
+    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-DATA-COMPETENCIA desta mesma operadora, que ela endurece.",
+    "escopo": "operadora",
+    "ativo": false
+  },
+  {
+    "codigo": "UNIMED-AD-MATERIAIS",
+    "campo": "materiais_utilizados",
+    "condicao": {"tipo": "presente"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Material faturado sem registro na evolução.",
+    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-MATERIAIS desta mesma operadora, que ela endurece.",
+    "escopo": "operadora",
+    "ativo": false
+  },
+  {
+    "codigo": "UNIMED-AD-PROFISSIONAL-NOME-COMPLETO",
+    "campo": "nome_profissional",
+    "condicao": {"tipo": "formato", "regex": "\\S+\\s+\\S.*"},
+    "acao": "sinalizar",
+    "motivo_glosa": "Nome do profissional aparentemente incompleto (só um termo): conferir antes do envio.",
+    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-PROFISSIONAL-NOME desta mesma operadora, que ela endurece.",
+    "escopo": "operadora",
+    "ativo": false
+  }
+]

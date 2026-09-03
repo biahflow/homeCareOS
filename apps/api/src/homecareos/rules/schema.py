@@ -110,6 +110,19 @@ CondicaoSe.model_rebuild()
 CondicaoTypeAdapter: TypeAdapter[Condicao] = TypeAdapter(Condicao)
 
 
+class EscopoRegra(enum.StrEnum):
+    """De onde a regra vem, e por isso quanto ela vale como prova.
+
+    `TISS` é regra genérica com fonte normativa pública (RDC Anvisa 11/2006,
+    Resolução Cofen 754/2024, padrão TISS/ANS): vale para qualquer operadora e
+    nasce ativa. `OPERADORA` é exigência de uma operadora específica, que só é
+    defensável contra o manual do prestador dela.
+    """
+
+    TISS = "tiss"
+    OPERADORA = "operadora"
+
+
 class AcaoRegra(enum.StrEnum):
     """O que fazer quando a condição da regra NÃO é satisfeita.
 
@@ -164,6 +177,11 @@ class RegraOut(BaseModel):
     motivo_glosa: str
     ativo: bool
     created_at: datetime
+    # Aditivo (issue #10): não quebra o contrato atual. `None`/`"operadora"`
+    # para regra criada via `POST /api/regras`, que não vem de catálogo.
+    codigo: str | None
+    fonte: str | None
+    escopo: str
 
     @classmethod
     def de_regra(cls, regra: Regra) -> RegraOut:
@@ -176,4 +194,7 @@ class RegraOut(BaseModel):
             motivo_glosa=regra.motivo_glosa,
             ativo=regra.ativo,
             created_at=regra.created_at,
+            codigo=regra.codigo,
+            fonte=regra.fonte,
+            escopo=regra.escopo,
         )

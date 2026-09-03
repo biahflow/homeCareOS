@@ -1,4 +1,4 @@
-"""Seed idempotente das operadoras conhecidas.
+"""Seed idempotente das operadoras conhecidas e do catálogo de regras.
 
 Uso: `python -m homecareos.seed`. Rodar mais de uma vez não duplica linhas —
 o `INSERT ... ON CONFLICT (codigo) DO NOTHING` do Postgres garante isso sem
@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from homecareos.db.models import Operadora
 from homecareos.db.session import get_sessionmaker
+from homecareos.rules.seed_regras import seed_regras
 
 OPERADORAS_SEED: tuple[tuple[str, str], ...] = (
     ("Amil", "AMIL"),
@@ -35,4 +36,7 @@ def seed_operadoras() -> None:
 
 
 if __name__ == "__main__":
+    # Nessa ordem: as regras materializam uma linha por operadora, então
+    # dependem das operadoras já existirem no banco.
     seed_operadoras()
+    seed_regras()

@@ -1,0 +1,132 @@
+[
+  {
+    "codigo": "TISS-EVOL-PACIENTE",
+    "campo": "nome_paciente",
+    "condicao": {"tipo": "presente"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Evolução sem identificação do paciente: a operadora não consegue vincular o atendimento ao beneficiário e glosa o item.",
+    "fonte": "RDC Anvisa 11/2006, item 4.12.1 — \"O prontuário domiciliar deve conter identificação do paciente, prescrição e evolução multiprofissional, resultados de exames, descrição do fluxo de atendimento de Urgência e Emergência, telefones de contatos do SAD e orientações para chamados.\". https://bvsms.saude.gov.br/bvs/saudelegis/anvisa/2006/res0011_26_01_2006.html (consultado em 2026-09-03)",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-DATA-PRESENTE",
+    "campo": "data_atendimento",
+    "condicao": {"tipo": "presente"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Evolução sem data de atendimento: não é possível comprovar em que dia o serviço faturado foi prestado.",
+    "fonte": "Padrão TISS/ANS — a guia SP/SADT, usada para atenção domiciliar, exige a data de realização do procedimento faturado, e a evolução é o documento comprobatório dessa data. https://www.gov.br/ans/pt-br/assuntos/prestadores/padrao-para-troca-de-informacao-de-saude-suplementar-2013-tiss (consultado em 2026-09-03). Número do campo no componente de conteúdo e estrutura não conferido — confirmar no Discovery.",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-DATA-COMPETENCIA",
+    "campo": "data_atendimento",
+    "condicao": {"tipo": "dentro_da_competencia"},
+    "acao": "sinalizar",
+    "motivo_glosa": "Data do atendimento fora da competência faturada: o item entra no lote errado e é glosado por divergência de período.",
+    "fonte": "Padrão TISS/ANS — o faturamento é organizado por competência e o atendimento precisa cair no período do lote enviado. https://www.gov.br/ans/pt-br/assuntos/prestadores/padrao-para-troca-de-informacao-de-saude-suplementar-2013-tiss (consultado em 2026-09-03). Número do campo no componente de conteúdo e estrutura não conferido — confirmar no Discovery.",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-PROFISSIONAL-NOME",
+    "campo": "nome_profissional",
+    "condicao": {"tipo": "presente"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Evolução sem o nome do profissional que executou o atendimento.",
+    "fonte": "Resolução Cofen 754/2024, Art. 2º, §3º — \"Caso não sejam seguidas as exigências quanto à assinatura eletrônica, o prontuário deve ser impresso e os registros identificados com o nome do profissional e número da inscrição do conselho, devidamente assinados.\". https://www.cofen.gov.br/resolucao-cofen-no-754-de-16-de-maio-de-2024/ (consultado em 2026-09-03; revogou a Resolução Cofen 429/2012)",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-COREN-PRESENTE",
+    "campo": "registro_coren",
+    "condicao": {"tipo": "presente"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Evolução sem o número de inscrição do profissional no conselho: sem ele a operadora não confirma habilitação e glosa o atendimento.",
+    "fonte": "Resolução Cofen 754/2024, Art. 2º, §3º — \"Caso não sejam seguidas as exigências quanto à assinatura eletrônica, o prontuário deve ser impresso e os registros identificados com o nome do profissional e número da inscrição do conselho, devidamente assinados.\". https://www.cofen.gov.br/resolucao-cofen-no-754-de-16-de-maio-de-2024/ (consultado em 2026-09-03; revogou a Resolução Cofen 429/2012)",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-COREN-FORMATO",
+    "campo": "registro_coren",
+    "condicao": {"tipo": "formato", "regex": "\\s*(COREN[-/ ]?[A-Za-z]{2})?[\\s.:\\-]*\\d{3,9}[\\s.\\-]*([A-Za-z]{2,5})?\\s*"},
+    "acao": "sinalizar",
+    "motivo_glosa": "Número de inscrição no conselho em formato inesperado — conferir se foi lido corretamente antes do envio.",
+    "fonte": "Heurística de legibilidade, não exigência normativa: não há formato nacional único para a grafia do número de inscrição no Coren, então a regra só sinaliza para conferência humana e nunca bloqueia sozinha. A base normativa da exigência do número (e não do seu formato) é Resolução Cofen 754/2024, Art. 2º, §3º — \"Caso não sejam seguidas as exigências quanto à assinatura eletrônica, o prontuário deve ser impresso e os registros identificados com o nome do profissional e número da inscrição do conselho, devidamente assinados.\". https://www.cofen.gov.br/resolucao-cofen-no-754-de-16-de-maio-de-2024/ (consultado em 2026-09-03; revogou a Resolução Cofen 429/2012)",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-CATEGORIA-PROFISSIONAL",
+    "campo": "categoria_profissional",
+    "condicao": {"tipo": "presente"},
+    "acao": "sinalizar",
+    "motivo_glosa": "Categoria profissional não identificada: a operadora não consegue conferir se o procedimento faturado é compatível com quem o executou.",
+    "fonte": "RDC Anvisa 11/2006, item 4.12.1 (evolução multiprofissional) — \"O prontuário domiciliar deve conter identificação do paciente, prescrição e evolução multiprofissional, resultados de exames, descrição do fluxo de atendimento de Urgência e Emergência, telefones de contatos do SAD e orientações para chamados.\". https://bvsms.saude.gov.br/bvs/saudelegis/anvisa/2006/res0011_26_01_2006.html (consultado em 2026-09-03)",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-ASSINATURA-PROFISSIONAL",
+    "campo": "assinatura_profissional_presente",
+    "condicao": {"tipo": "verdadeiro"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Evolução sem assinatura do profissional: documento sem validade para comprovar a execução do atendimento.",
+    "fonte": "RDC Anvisa 11/2006, item 4.12.2 — \"O prontuário deve ser preenchido com letra legível e assinado por todos os profissionais envolvidos diretamente na assistência ao paciente.\". https://bvsms.saude.gov.br/bvs/saudelegis/anvisa/2006/res0011_26_01_2006.html (consultado em 2026-09-03) + Resolução Cofen 754/2024, Art. 2º, §3º — \"Caso não sejam seguidas as exigências quanto à assinatura eletrônica, o prontuário deve ser impresso e os registros identificados com o nome do profissional e número da inscrição do conselho, devidamente assinados.\". https://www.cofen.gov.br/resolucao-cofen-no-754-de-16-de-maio-de-2024/ (consultado em 2026-09-03; revogou a Resolução Cofen 429/2012)",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-CARIMBO-PRESENTE",
+    "campo": "carimbo_presente",
+    "condicao": {"tipo": "verdadeiro"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Evolução sem carimbo: o registro não identifica o profissional e o número da inscrição no conselho.",
+    "fonte": "Resolução Cofen 754/2024, Art. 2º, §3º — \"Caso não sejam seguidas as exigências quanto à assinatura eletrônica, o prontuário deve ser impresso e os registros identificados com o nome do profissional e número da inscrição do conselho, devidamente assinados.\". https://www.cofen.gov.br/resolucao-cofen-no-754-de-16-de-maio-de-2024/ (consultado em 2026-09-03; revogou a Resolução Cofen 429/2012) — em registro manuscrito o carimbo é o meio usual de cumprir a identificação exigida",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-CARIMBO-LEGIVEL",
+    "campo": "carimbo_legivel",
+    "condicao": {"tipo": "se", "quando": {"tipo": "verdadeiro", "campo": "carimbo_presente"}, "entao": {"tipo": "verdadeiro", "campo": "carimbo_legivel"}},
+    "acao": "sinalizar",
+    "motivo_glosa": "Carimbo presente mas ilegível: a operadora não consegue conferir a identificação e glosa.",
+    "fonte": "RDC Anvisa 11/2006, item 4.12.2 — \"O prontuário deve ser preenchido com letra legível e assinado por todos os profissionais envolvidos diretamente na assistência ao paciente.\". https://bvsms.saude.gov.br/bvs/saudelegis/anvisa/2006/res0011_26_01_2006.html (consultado em 2026-09-03) (\"preenchido com letra legível\")",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-PROCEDIMENTOS",
+    "campo": "procedimentos_realizados",
+    "condicao": {"tipo": "presente"},
+    "acao": "rejeitar",
+    "motivo_glosa": "Evolução sem descrição dos procedimentos realizados: não há o que comprove o item faturado.",
+    "fonte": "RDC Anvisa 11/2006, item 4.12 — \"O SAD deve manter um prontuário domiciliar com o registro de todas as atividades realizadas durante a atenção direta ao paciente, desde a indicação até a alta ou óbito do paciente.\". https://bvsms.saude.gov.br/bvs/saudelegis/anvisa/2006/res0011_26_01_2006.html (consultado em 2026-09-03)",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-MATERIAIS",
+    "campo": "materiais_utilizados",
+    "condicao": {"tipo": "presente"},
+    "acao": "sinalizar",
+    "motivo_glosa": "Nenhum material registrado na evolução: se houver material faturado no lote, ele fica sem comprovação e é glosado.",
+    "fonte": "Padrão TISS/ANS — material e medicamento faturados precisam de comprovação documental do consumo, e a evolução é esse documento. Regra em sinalizar, e não rejeitar, porque nem todo atendimento consome material. https://www.gov.br/ans/pt-br/assuntos/prestadores/padrao-para-troca-de-informacao-de-saude-suplementar-2013-tiss (consultado em 2026-09-03). Número do campo no componente de conteúdo e estrutura não conferido — confirmar no Discovery.",
+    "escopo": "tiss",
+    "ativo": true
+  },
+  {
+    "codigo": "TISS-EVOL-ASSINATURA-RESPONSAVEL",
+    "campo": "assinatura_paciente_responsavel_presente",
+    "condicao": {"tipo": "verdadeiro"},
+    "acao": "sinalizar",
+    "motivo_glosa": "Sem assinatura do paciente ou responsável: falta a confirmação de que a visita ocorreu no domicílio.",
+    "fonte": "Prática de comprovação de execução em atenção domiciliar, sem base normativa federal específica localizada. Por isso sinalizar, nunca rejeitar. Confirmar exigência contratual por operadora no Discovery.",
+    "escopo": "tiss",
+    "ativo": true
+  }
+]
