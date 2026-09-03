@@ -46,7 +46,7 @@ _TRANSICOES_VALIDAS: dict[PendenciaStatus, frozenset[PendenciaStatus]] = {
 # Janela usada para separar "vencendo em breve" de "futura" no resumo por
 # faixa de deadline. Não há especificação de produto para o corte exato;
 # 7 dias é a janela operacional mais comum para esse tipo de painel.
-_JANELA_PROXIMA = timedelta(days=7)
+JANELA_PROXIMA = timedelta(days=7)
 
 
 class PendenciaItem(BaseModel):
@@ -92,7 +92,7 @@ def resumo_pendencias(session: Annotated[Session, Depends(get_session)]) -> Resu
         por_status[status_valor.value] = contagem
 
     agora = datetime.now(UTC)
-    limite_proximo = agora + _JANELA_PROXIMA
+    limite_proximo = agora + JANELA_PROXIMA
     em_aberto = Pendencia.status != PendenciaStatus.RESOLVIDA
 
     vencidas = session.execute(
