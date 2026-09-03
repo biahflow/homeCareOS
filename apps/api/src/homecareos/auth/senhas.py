@@ -47,6 +47,25 @@ def verificar(hash_armazenado: str, senha: str) -> bool:
         return False
 
 
+def validar_forca(senha: str, *, minimo: int) -> None:
+    """Levanta `ValueError` com a razão quando a senha não serve.
+
+    **Só o piso de tamanho, e é uma escolha.** Regras de composição — exigir
+    maiúscula, dígito e símbolo — empurram as pessoas para `Senha@123` e para o
+    papel colado no monitor; elas não aumentam a entropia real, só o formato do
+    que o dicionário do atacante já tenta primeiro. Comprimento é o que aumenta.
+    Quem for "melhorar" isto depois: a melhoria seria comparar contra uma lista
+    de senhas vazadas, não somar exigências de formato.
+
+    A mensagem **diz o requisito** (quantos caracteres faltam de mínimo), ao
+    contrário das mensagens genéricas do login: aqui não há nada a esconder —
+    quem chegou até este ponto já provou, com o token do e-mail, que a conta é
+    dele.
+    """
+    if len(senha) < minimo:
+        raise ValueError(f"a senha precisa ter pelo menos {minimo} caracteres")
+
+
 def verificar_dummy() -> None:
     """Gasta o tempo de uma verificação Argon2 e descarta o resultado.
 

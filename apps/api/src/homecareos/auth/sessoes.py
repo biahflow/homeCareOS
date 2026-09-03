@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session as DbSession
 
 from homecareos.db.models import Sessao, Usuario
@@ -91,3 +92,32 @@ def revogar(session: DbSession, token: str, *, agora: datetime) -> None:
         return
     sessao.revoked_at = agora
     session.commit()
+
+
+def revogar_todas(session: DbSession, usuario_id: uuid.UUID, *, agora: datetime) -> None:
+    """Revoga **todas** as sessões abertas do usuário. **Não commita.**
+
+    É o que fecha a recuperação de senha (issue #34): trocar a senha sem
+    derrubar as sessões já abertas não resolve nada quando a conta foi
+    comprometida — o invasor continua dentro com o cookie que já tem, e a pessoa
+    que acabou de "recuperar" a conta acha que resolveu. Quem redefine a senha
+    perde as próprias sessões junto, inclusive a do navegador de onde pediu, e
+    isso é o comportamento correto: não há como saber qual das sessões abertas é
+    dela.
+
+    **Não commita, ao contrário de `revogar`**, e a diferença é deliberada: esta
+    função roda dentro da transação da redefinição, junto com a senha nova e a
+    marcação do token. As três entram juntas ou não entram — um commit aqui
+    deixaria a pessoa deslogada com a senha antiga se a gravação seguinte
+    falhasse. Quem chama commita.
+
+    `UPDATE ... WHERE revoked_at IS NULL` num comando só, e não um `SELECT`
+    seguido de laço: é uma escrita atômica, não carrega para a memória sessão
+    que não vai mudar, e o `WHERE` preserva o `revoked_at` original das que já
+    estavam revogadas — que é o dado de auditoria de quando aquela sessão caiu.
+    """
+    session.execute(
+        update(Sessao)
+        .where(Sessao.usuario_id == usuario_id, Sessao.revoked_at.is_(None))
+        .values(revoked_at=agora)
+    )

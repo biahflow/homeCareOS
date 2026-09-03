@@ -88,6 +88,32 @@ class Settings(BaseSettings):
     # origem e escapar da trava de IP.
     confiar_em_x_forwarded_for: bool = False
 
+    # Gateway de e-mail (SMTP), usado pela recuperação de senha (issue #34).
+    # Host OU remetente vazio desabilita a recuperação: o resto do sistema segue
+    # funcionando, e o caminho para quem esqueceu a senha continua sendo o CLI.
+    smtp_host: str = ""
+    smtp_porta: int = 587
+    smtp_usuario: str = ""
+    smtp_senha: str = ""
+    smtp_remetente: str = ""
+    smtp_usar_tls: bool = True
+    smtp_timeout_segundos: float = 10.0
+
+    # Base do link que vai no e-mail de recuperação. É o frontend que renderiza
+    # a tela de redefinição, não a API.
+    frontend_base_url: str = "http://localhost:3000"
+
+    # Vida do token de recuperação. Curta de propósito: é uma credencial que
+    # troca senha, e ela fica parada numa caixa postal até alguém abrir.
+    senha_reset_validade_minutos: int = 30
+    # Teto de e-mails de recuperação por usuário por hora — senão o endpoint,
+    # que é público, vira metralhadora contra a caixa postal de quem nem pediu.
+    senha_reset_max_por_hora: int = 3
+
+    # Piso de tamanho de senha, aplicado no reset e no CLI (ver
+    # `auth/senhas.validar_forca`).
+    senha_minima_caracteres: int = 12
+
     # Gateway de WhatsApp (uazapi). Base URL vazia OU token vazio desabilita
     # todo o envio de alerta — o sistema segue funcionando, só não notifica.
     uazapi_base_url: str = ""

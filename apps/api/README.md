@@ -210,6 +210,76 @@ Duas notas honestas:
   esta configuração errada não falha aberta, falha **fechada**, e derrubar
   todo mundo é um jeito ruim de descobrir o erro.
 
+### Recuperação de senha por e-mail
+
+Quem esquece a senha se atende sozinho (issue #34), por e-mail:
+
+| rota | corpo | resposta |
+| --- | --- | --- |
+| `POST /api/auth/senha/esqueci` | `{"email": "..."}` | **204 sempre** |
+| `POST /api/auth/senha/redefinir` | `{"token": "...", "nova_senha": "..."}` | 204, ou 422 |
+
+As duas rotas nascem **sem** exigir credencial, como o login: quem esqueceu a
+senha não tem sessão para apresentar.
+
+**`/senha/esqueci` responde 204 em todos os caminhos** — e-mail que não existe,
+usuário inativo, teto de envios atingido, SMTP não configurado e até falha de
+envio. Um 404 para e-mail desconhecido entregaria a lista de quem trabalha na
+operação, que é exatamente a enumeração que a issue #30 fechou no login gastando
+uma verificação Argon2 descartável só para o tempo de resposta não denunciar
+quem existe. Pelo mesmo motivo, SMTP fora do ar não vira 500: falha de envio só
+acontece para e-mail que existe, e o status voltaria a distinguir os casos. A
+falha é registrada com `logger.exception` no log da aplicação — é lá que o
+operador a vê, não na resposta.
+
+Quando o usuário existe e está ativo, o e-mail leva o link
+`{FRONTEND_BASE_URL}/redefinir-senha?token=<token>` (é o frontend que renderiza
+a tela; a API só valida o token). O token vale `SENHA_RESET_VALIDADE_MINUTOS`
+(30), é de **uso único**, e o banco guarda só o SHA-256 dele — um dump vazado
+não vira redefinição de senha.
+
+Redefinir com sucesso **revoga todas as sessões abertas do usuário**, inclusive
+a de quem está redefinindo. É o ponto da recuperação: se a conta foi
+comprometida, trocar a senha sem derrubar as sessões do invasor não resolve
+nada. Senha nova, sessões revogadas e token consumido entram num commit só.
+
+Senha que não passa no piso de tamanho (`SENHA_MINIMA_CARACTERES`, 12) responde
+422 dizendo o requisito e **não** consome o token — senão digitar uma senha
+curta obrigaria a pessoa a pedir outro e-mail. Token inexistente, expirado e já
+usado respondem o mesmo 422 genérico.
+
+#### Configuração SMTP
+
+```bash
+SMTP_HOST=smtp.exemplo.com
+SMTP_PORTA=587
+SMTP_USUARIO=sistema@exemplo.com
+SMTP_SENHA=...
+SMTP_REMETENTE="HomeCareOS <sistema@exemplo.com>"
+SMTP_USAR_TLS=true
+FRONTEND_BASE_URL=https://app.exemplo.com
+```
+
+#### Limitações honestas
+
+- **Sem SMTP configurado, a recuperação fica desligada.** `SMTP_HOST` **ou**
+  `SMTP_REMETENTE` vazio faz `get_email_provider` devolver `None`: o endpoint
+  continua respondendo 204 (ele responde 204 sempre), registra um `warning` no
+  log dizendo que a recuperação está desligada, e o caminho para redefinir
+  senha continua sendo o CLI. Não é falha — é modo de operação legítimo em
+  ambiente local e homologação —, mas em produção significa que ninguém recebe
+  nada e a única pista é o log.
+- **Não há proteção por IP neste endpoint.** O teto é por usuário
+  (`SENHA_RESET_MAX_POR_HORA`, 3 por hora), o que protege a caixa postal de cada
+  pessoa; abuso distribuído contra muitas contas diferentes não é contido aqui.
+  É trabalho futuro, junto com o rate limit geral da API.
+- **Só STARTTLS (porta 587).** A porta 465, de TLS implícito
+  (`smtplib.SMTP_SSL`), não é suportada nesta entrega.
+- **O 204 é indistinguível no corpo e no status, não no relógio.** O caminho do
+  e-mail cadastrado fala com o servidor SMTP e o do desconhecido não; sob
+  medição cuidadosa a diferença de tempo existe. Fechá-la exigiria fila
+  assíncrona de envio, que esta entrega não tem.
+
 ### Criar o primeiro usuário
 
 ```bash
@@ -221,7 +291,10 @@ uv run python -m homecareos.auth.cli criar \
 
 A senha **nunca** vem em argumento de linha de comando: ali ela ficaria no
 histórico do shell e apareceria em `ps` para qualquer outro usuário da máquina.
-Papel inválido e e-mail duplicado saem com código 1 e mensagem clara.
+Papel inválido e e-mail duplicado saem com código 1 e mensagem clara. O CLI usa
+a **mesma** validação de força do endpoint de redefinição
+(`SENHA_MINIMA_CARACTERES`): senão o caminho administrativo aceitaria a senha que
+o caminho do usuário recusa.
 
 ### Limitações conhecidas
 
@@ -232,8 +305,9 @@ que a ausência:
 - **sem rate limit geral da API**: o freio da issue #33 cobre só
   `POST /api/auth/login` (ver "Bloqueio por tentativa de login" acima); as
   demais rotas de `/api/*` não têm limite de requisições;
-- **sem recuperação de senha**: quem esquece a senha depende de alguém rodar o
-  CLI de novo;
+- **recuperação de senha só com SMTP configurado**: ela existe desde a issue #34
+  (ver "Recuperação de senha por e-mail" acima), mas sem `SMTP_HOST`/
+  `SMTP_REMETENTE` fica desligada e o caminho volta a ser o CLI;
 - **sem MFA**;
 - **sem CRUD de usuário via API**: criar, editar, desativar e listar usuário é
   operação de banco ou CLI. A matriz aprovada não diz quem administra usuário, e
