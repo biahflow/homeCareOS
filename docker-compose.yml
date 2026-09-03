@@ -105,6 +105,24 @@ services:
       minio:
         condition: service_healthy
 
+  # Varredura de alertas de WhatsApp (issue #9). Fica em `profiles: ["tools"]`
+  # como as demais ferramentas: em produção quem a chama é um cron
+  # (`docker compose run --rm api-alertas`), não o `up`. Sai com código 1 só
+  # quando a configuração de alertas está quebrada — é isso que o cron monitora.
+  api-alertas:
+    build:
+      context: ./apps/api
+    profiles: ["tools"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://homecareos:homecareos@postgres:5432/homecareos
+    command: python -m homecareos.alerts.scan
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres-data:
   minio-data:

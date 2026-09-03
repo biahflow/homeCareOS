@@ -13,6 +13,7 @@ import logging
 
 from fastapi import Depends, FastAPI
 
+from homecareos.alerts.router import router as alertas_router
 from homecareos.api.auth import require_api_key
 from homecareos.api.errors import register_exception_handlers
 from homecareos.api.routers.documentos import router as documentos_router
@@ -21,6 +22,7 @@ from homecareos.api.routers.pacientes import router as pacientes_router
 from homecareos.api.routers.pendencias import router as pendencias_router
 from homecareos.config import Settings, get_settings
 from homecareos.intake.router import router as intake_router
+from homecareos.reports.router import router as relatorios_router
 from homecareos.rules.router import router as rules_router
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # O router de regras nasce sem auth própria (é escrito pela trilha do motor
     # de regras); a proteção é aplicada aqui, como para todos os outros.
     app.include_router(rules_router, dependencies=[Depends(require_api_key)])
+    app.include_router(relatorios_router, dependencies=[Depends(require_api_key)])
+    app.include_router(alertas_router, dependencies=[Depends(require_api_key)])
 
     @app.get("/health", summary="Sonda de infraestrutura", tags=["health"])
     def health() -> dict[str, str]:

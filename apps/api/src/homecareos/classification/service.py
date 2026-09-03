@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from homecareos.alerts.hooks import notificar_classificacao
 from homecareos.classification.engine import calcular_deadline, classificar
 from homecareos.classification.errors import (
     DocumentoNaoEncontradoError,
@@ -178,6 +179,13 @@ def classificar_documento(
             session.add(_pendencia(documento_id, proposta, deadline, responsavel))
 
     session.commit()
+    # Custo declarado: o gancho é SÍNCRONO e está no caminho do upload — o teto
+    # que ele acrescenta à requisição é `alertas_timeout_segundos`. Ele existe
+    # porque o caso crítico (evolução sem carimbo/assinatura) precisa de aviso
+    # instantâneo, não da próxima passada do cron. Desligar é
+    # `ALERTAS_HOOK_INLINE_HABILITADO=false`, e a varredura periódica continua
+    # cobrindo o mesmo caso. `notificar_classificacao` nunca levanta.
+    notificar_classificacao(documento_id)
     return alvo
 
 

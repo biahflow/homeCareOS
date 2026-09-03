@@ -45,6 +45,34 @@ class Settings(BaseSettings):
     # a uma pessoa acontece por reatribuição via `PATCH /api/pendencias/{id}`.
     pendencia_responsavel_padrao: str = "equipe-conferencia"
 
+    # Gateway de WhatsApp (uazapi). Base URL vazia OU token vazio desabilita
+    # todo o envio de alerta — o sistema segue funcionando, só não notifica.
+    uazapi_base_url: str = ""
+    uazapi_token: str = ""
+    alertas_timeout_segundos: float = 10.0
+
+    # Destinatários por tipo de alerta, JSON:
+    #   {"documento_incompleto_critico": ["5521999999999"], ...}
+    alertas_destinatarios: str = ""
+    # Sobrescrita opcional dos templates, JSON: {"<tipo>": "<template>"}.
+    alertas_templates: str = ""
+
+    # Anti-bombardeio: teto por destinatário por hora e intervalo mínimo entre
+    # dois alertas sobre o MESMO assunto (ver `alerts/service.py`).
+    alertas_max_por_hora_por_destinatario: int = 10
+    alertas_cooldown_horas: int = 24
+
+    # Parâmetros dos detectores (ver `alerts/detectores.py`).
+    alertas_dias_antes_deadline: int = 3
+    alertas_horas_pendencia_parada: int = 48
+    alertas_volume_janela_dias: int = 14
+    alertas_volume_fator: float = 1.5
+    alertas_volume_minimo_documentos: int = 10
+
+    # Dispara o alerta de documento incompleto crítico já na classificação,
+    # além da varredura periódica.
+    alertas_hook_inline_habilitado: bool = True
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
