@@ -41,6 +41,7 @@ from homecareos.extraction.schema import (
 from homecareos.intake.router import get_document_storage, get_extraction_dispatcher
 from homecareos.main import app
 from homecareos.storage import S3DocumentStorage, build_key
+from tests.conftest import AUTH_HEADERS, TEST_API_KEY
 from tests.fakes import make_pdf
 
 pytestmark = pytest.mark.integration
@@ -179,6 +180,11 @@ def api(
     dispatcher = SyncExtractionDispatcher(provider=provider, session_factory=get_sessionmaker())
     app.dependency_overrides[get_document_storage] = lambda: storage
     app.dependency_overrides[get_extraction_dispatcher] = lambda: dispatcher
+    # `settings` já é `get_settings()` real (mesmo Postgres/MinIO). Só
+    # acrescenta a chave de teste, para a auth global não derrubar o e2e.
+    app.dependency_overrides[get_settings] = lambda: settings.model_copy(
+        update={"api_keys": TEST_API_KEY}
+    )
     try:
         yield TestClient(app)
     finally:
@@ -214,7 +220,7 @@ def _upload(api: TestClient, conteudo: bytes, chave: str) -> Any:
         "/api/documentos",
         files={"arquivo": ("evolucao.pdf", conteudo, "application/pdf")},
         data={"competencia": COMPETENCIA},
-        headers={"Idempotency-Key": chave},
+        headers={**AUTH_HEADERS, "Idempotency-Key": chave},
     )
 
 
@@ -237,6 +243,9 @@ def test_upload_ponta_a_ponta_com_postgres_e_minio_reais(
     assert len(documentos) == PAGINAS
     assert [d["pagina"] for d in documentos] == list(range(1, PAGINAS + 1))
     assert all(d["status"] == "processando" for d in documentos)
+    # Contrato consumido pelo frontend, travado contra Postgres real: a auth
+    # global (Trilha F) protege o endpoint sem mudar a forma da resposta.
+    assert all(set(d) == {"id", "pagina", "status", "competencia"} for d in documentos)
     ids = [uuid.UUID(d["id"]) for d in documentos]
     limpeza.extend(ids)
 
