@@ -2,6 +2,7 @@
 
 from homecareos.db.models.alerta import AlertaEnviado
 from homecareos.db.models.baseline import BaselineCompetencia
+from homecareos.db.models.codigo_recuperacao_mfa import CodigoRecuperacaoMfa
 from homecareos.db.models.documento import Documento
 from homecareos.db.models.enums import (
     DocumentoStatus,
@@ -25,6 +26,7 @@ from homecareos.db.models.validacao import Validacao
 __all__ = [
     "AlertaEnviado",
     "BaselineCompetencia",
+    "CodigoRecuperacaoMfa",
     "Documento",
     "DocumentoStatus",
     "Extracao",

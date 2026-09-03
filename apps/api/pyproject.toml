@@ -27,6 +27,12 @@ dependencies = [
   # exige função lenta e com sal — o `hmac.compare_digest` de `api/auth.py`
   # resolve o problema oposto (segredo de máquina, de alta entropia).
   "argon2-cffi>=23.1,<25",
+  # TOTP do segundo fator (RFC 6238, issue #35). Biblioteca pequena e sem
+  # dependência transitiva, usada só para derivar o código de um passo
+  # (`TOTP.at`) e montar a URI `otpauth://` do QR code — a janela de aceitação
+  # e o anti-replay são nossos, em `auth/mfa.py`, porque `TOTP.verify` devolve
+  # booleano e o passo aceito é justamente o que precisamos guardar.
+  "pyotp>=2.9,<3",
 ]
 
 [dependency-groups]

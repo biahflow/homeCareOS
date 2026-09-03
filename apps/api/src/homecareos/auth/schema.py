@@ -106,6 +106,77 @@ class UsuarioOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MfaPendenteOut(BaseModel):
+    """Resposta de `POST /api/auth/login` quando a conta tem MFA ativado.
+
+    **Não carrega dado nenhum do usuário**, e é o ponto: quem apresentou só a
+    senha ainda não provou quem é. Devolver nome, papel e id aqui entregaria
+    metade da conta a quem parou no primeiro fator — e o frontend passaria a
+    poder desenhar a tela logada antes do segundo passo.
+    """
+
+    mfa_pendente: Literal[True] = True
+
+
+class MfaVerificarRequest(BaseModel):
+    """Corpo de `POST /api/auth/mfa/verificar`.
+
+    `codigo` aceita tanto os seis dígitos do app autenticador quanto um código
+    de recuperação (`a1b2c-3d4e5`): é um campo só porque, para quem digita, é a
+    mesma pergunta — e dois campos separados diriam a quem sonda qual dos dois
+    caminhos falhou.
+    """
+
+    codigo: str = Field(min_length=1)
+
+
+class MfaIniciarOut(BaseModel):
+    """Resposta de `POST /api/auth/mfa/iniciar`: o segredo e a URI do QR code.
+
+    O segredo sai em claro **uma vez**, para quem já está autenticado e está
+    cadastrando o próprio app. `otpauth_uri` é o mesmo segredo no formato que
+    vira QR code — quem tem o app em outro aparelho digita o `secret` à mão.
+    """
+
+    secret: str
+    otpauth_uri: str
+
+
+class MfaConfirmarRequest(BaseModel):
+    """Corpo de `POST /api/auth/mfa/confirmar`: o primeiro código gerado pelo app.
+
+    Confirmar com um código é o que prova que o app guardou o segredo. Ativar
+    sem essa prova trancaria para fora quem errasse o cadastro do QR code.
+    """
+
+    codigo: str = Field(min_length=1)
+
+
+class MfaCodigosRecuperacaoOut(BaseModel):
+    """Os códigos de recuperação, em claro. Esta é a **única** vez que eles existem.
+
+    O banco guarda só o hash Argon2id (ver
+    `db/models/codigo_recuperacao_mfa.py`): não há endpoint que os mostre de
+    novo, e quem os perder junto com o celular precisa de alguém que administre
+    o banco. É o preço de não guardar credencial em claro.
+    """
+
+    codigos: list[str]
+
+
+class MfaDesativarRequest(BaseModel):
+    """Corpo de `POST /api/auth/mfa/desativar`: senha **e** código atual.
+
+    Os dois, e não um: com só o código, uma sessão sequestrada desligaria o
+    segundo fator sozinha — que é exatamente o que ele existe para impedir. E a
+    senha sozinha não bastaria porque ela pode ter vazado, que é a hipótese que
+    faz alguém ativar MFA.
+    """
+
+    senha: str = Field(min_length=1)
+    codigo: str = Field(min_length=1)
+
+
 class MaquinaOut(BaseModel):
     """Resposta de `GET /api/auth/eu` para a integração máquina-a-máquina.
 
