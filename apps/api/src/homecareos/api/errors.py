@@ -39,6 +39,7 @@ _TIPOS_POR_STATUS: dict[int, str] = {
     status.HTTP_413_REQUEST_ENTITY_TOO_LARGE: "payload_too_large",
     status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: "unsupported_media_type",
     status.HTTP_422_UNPROCESSABLE_ENTITY: "unprocessable_entity",
+    status.HTTP_429_TOO_MANY_REQUESTS: "too_many_requests",
     status.HTTP_501_NOT_IMPLEMENTED: "not_implemented",
     status.HTTP_503_SERVICE_UNAVAILABLE: "service_unavailable",
 }

@@ -180,6 +180,36 @@ Estreitá-la é outra decisão, com outro ADR — não um ajuste desta trilha.
 `POST /api/pacientes` não consta da matriz aprovada e por isso herda a regra do
 router (os três papéis), que é o comportamento que já existia.
 
+### Bloqueio por tentativa de login
+
+`POST /api/auth/login` tem freio contra força bruta (issue #33), defesa em
+profundidade com três mecanismos independentes (ver `auth/protecao.py`):
+
+| mecanismo | quando age | parâmetro |
+| --- | --- | --- |
+| **Atraso progressivo** | a cada falha da combinação conta+IP | `LOGIN_ATRASO_BASE_SEGUNDOS` (0.25s), dobra por falha até `LOGIN_ATRASO_MAXIMO_SEGUNDOS` (2s) |
+| **Trava de IP** | falhas daquele IP na janela `>= LOGIN_FALHAS_PARA_TRAVAR_IP` (10) **e nenhum login bem-sucedido do mesmo IP na janela** | IP compartilhado é o caso comum, não a exceção: atrás de proxy a empresa inteira chega com um IP só, e contar falhas cruas trancaria todo mundo no começo do turno. Rede com gente trabalhando tem login que funciona; quem sonda senha não tem nenhum |
+| **Trava de conta** | falhas daquele e-mail na janela `>= LOGIN_FALHAS_PARA_TRAVAR_CONTA` (20), zerada pelo último sucesso daquele e-mail | último recurso, de propósito: um limiar baixo permitiria que qualquer um que soubesse o e-mail de alguém mantivesse essa pessoa fora do sistema |
+
+`LOGIN_JANELA_MINUTOS` (15) é a janela de observação, e `LOGIN_TRAVA_MINUTOS`
+(15) é o tempo reportado no header `Retry-After` do 429. A contagem é sempre
+pela **string de e-mail tentada**, exista ou não a conta — contar só para
+e-mail cadastrado reabriria a enumeração de usuário que a issue #30 fechou. A
+resposta de bloqueio é genérica e idêntica para trava de IP e trava de conta,
+pelo mesmo motivo do 401 do login.
+
+Duas notas honestas:
+
+- **`tentativas_login` cresce a cada tentativa de login, sucesso ou falha, e
+  não há expurgo automático nesta entrega.** `auth/protecao.limpar_tentativas_antigas`
+  existe e apaga linhas antigas, mas não há agendador que a chame — é operação
+  manual (ou de um cron futuro) até essa issue existir.
+- **`CONFIAR_EM_X_FORWARDED_FOR` precisa ser ligado em deploy atrás de proxy.**
+  Sem isso, `request.client.host` é o IP do balanceador para toda requisição,
+  e a trava de IP trava o mundo inteiro de uma vez na primeira sondagem —
+  esta configuração errada não falha aberta, falha **fechada**, e derrubar
+  todo mundo é um jeito ruim de descobrir o erro.
+
 ### Criar o primeiro usuário
 
 ```bash
@@ -199,8 +229,9 @@ Esta entrega **não** tem, e é deliberado — cada um destes itens é decisão 
 produto/segurança que merece a sua própria issue, e uma versão frouxa seria pior
 que a ausência:
 
-- **sem bloqueio por tentativa de login e sem rate limit**: força bruta contra a
-  API não é freada pela aplicação hoje;
+- **sem rate limit geral da API**: o freio da issue #33 cobre só
+  `POST /api/auth/login` (ver "Bloqueio por tentativa de login" acima); as
+  demais rotas de `/api/*` não têm limite de requisições;
 - **sem recuperação de senha**: quem esquece a senha depende de alguém rodar o
   CLI de novo;
 - **sem MFA**;
