@@ -29,18 +29,30 @@ def hash_do_token(token: str) -> str:
 
 
 def criar_sessao(
-    session: DbSession, usuario: Usuario, *, duracao_horas: int, agora: datetime
+    session: DbSession,
+    usuario: Usuario,
+    *,
+    duracao_horas: int,
+    agora: datetime,
+    mfa_pendente: bool = False,
 ) -> tuple[Sessao, str]:
     """Cria a sessão e devolve `(sessao, token)`. Commita.
 
     O token do retorno é a **única** vez que ele existe em claro fora do cookie:
     quem chama o entrega ao navegador e o esquece.
+
+    `mfa_pendente=True` cria a sessão do **primeiro** passo do login de quem tem
+    segundo fator ativado (issue #35): ela existe, tem cookie e não abre rota
+    nenhuma — só `POST /api/auth/mfa/verificar` a enxerga. O default é `False`
+    porque quem não tem MFA continua logando em uma etapa, exatamente como
+    antes.
     """
     token = secrets.token_urlsafe(32)
     sessao = Sessao(
         usuario_id=usuario.id,
         token_hash=hash_do_token(token),
         expires_at=agora + timedelta(hours=duracao_horas),
+        mfa_pendente=mfa_pendente,
     )
     session.add(sessao)
     session.commit()
@@ -51,13 +63,20 @@ def criar_sessao(
 def resolver_sessao(session: DbSession, token: str, *, agora: datetime) -> Usuario | None:
     """Devolve o usuário da sessão, ou `None` quando ela não vale mais.
 
-    `None` cobre, sem distinguir, cinco casos: token que não existe, sessão
-    expirada, sessão revogada, usuário apagado e **usuário desativado**.
+    `None` cobre, sem distinguir, seis casos: token que não existe, sessão
+    expirada, sessão revogada, usuário apagado, **usuário desativado** e
+    **sessão pendente de MFA**.
 
-    O último é metade da razão de a sessão ter estado no banco: desligar alguém
-    tem que derrubar o acesso na hora, e não quando o token dele vencer. Um JWT
-    autocontido só conseguiria isso com uma denylist — que é o mesmo estado que
-    ele prometia evitar (ADR 0001).
+    O usuário desativado é metade da razão de a sessão ter estado no banco:
+    desligar alguém tem que derrubar o acesso na hora, e não quando o token
+    dele vencer. Um JWT autocontido só conseguiria isso com uma denylist — que
+    é o mesmo estado que ele prometia evitar (ADR 0001).
+
+    A sessão pendente de MFA (issue #35) é o que faz o segundo fator **não ser
+    decorativo**: sem esta recusa, a sessão criada no primeiro passo do login
+    já abriria a API inteira e o MFA viraria uma tela que dá para pular. A
+    separação de `resolver_sessao_pendente` é deliberada: `principal_atual` usa
+    apenas esta função, e por construção nunca enxerga sessão pendente.
     """
     # Um `join` só, e não duas consultas: a sessão sem o usuário não decide
     # nada — `ativo` faz parte da validade da sessão, e é ele que faz desativar
@@ -75,7 +94,44 @@ def resolver_sessao(session: DbSession, token: str, *, agora: datetime) -> Usuar
         return None
     if not usuario.ativo:
         return None
+    if sessao.mfa_pendente:
+        return None
     return usuario
+
+
+def resolver_sessao_pendente(
+    session: DbSession, token: str, *, agora: datetime
+) -> tuple[Sessao, Usuario] | None:
+    """A sessão **pendente** de MFA e o dono dela, ou `None`. Caminho exclusivo
+    de `POST /api/auth/mfa/verificar`.
+
+    Aceita **só** sessão com `mfa_pendente=True`, não expirada, não revogada e
+    de usuário ativo — o espelho exato de `resolver_sessao`, que aceita todas as
+    outras. As duas funções existem separadas de propósito: uma sessão está de
+    um lado ou do outro, nunca dos dois, e é essa separação que garante que
+    `principal_atual` — que usa apenas `resolver_sessao` — não tem como deixar
+    passar quem ainda não apresentou o segundo fator.
+
+    Devolve a `Sessao` junto com o `Usuario` porque quem chama precisa dos dois:
+    é a sessão que deixa de ser pendente quando o código é aceito, e é o usuário
+    que recebe o `mfa_ultimo_passo` do anti-replay.
+    """
+    linha = session.execute(
+        select(Sessao, Usuario)
+        .join(Usuario, Usuario.id == Sessao.usuario_id)
+        .where(Sessao.token_hash == hash_do_token(token))
+    ).first()
+    if linha is None:
+        return None
+
+    sessao, usuario = linha.tuple()
+    if not sessao.mfa_pendente:
+        return None
+    if sessao.revoked_at is not None or sessao.expires_at <= agora:
+        return None
+    if not usuario.ativo:
+        return None
+    return sessao, usuario
 
 
 def revogar(session: DbSession, token: str, *, agora: datetime) -> None:

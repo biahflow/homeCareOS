@@ -280,6 +280,96 @@ FRONTEND_BASE_URL=https://app.exemplo.com
   medição cuidadosa a diferença de tempo existe. Fechá-la exigiria fila
   assíncrona de envio, que esta entrega não tem.
 
+### Segundo fator (MFA por TOTP)
+
+Quem quiser exigir um segundo fator liga o **TOTP em app autenticador** (Google
+Authenticator, Authy, 1Password) — issue #35. TOTP e não código por WhatsApp ou
+SMS: funciona offline, não depende do gateway de mensagens estar no ar, não
+custa mensagem, é imune a SIM swap, e mantém o fator separado do canal de
+recuperação de senha (e-mail) — um e-mail comprometido não entrega os dois.
+
+O segundo fator é **opcional por conta**: quem não ativou continua logando em
+uma etapa, com o comportamento de sempre.
+
+#### Ativação (três passos, com a sessão já aberta)
+
+| rota | corpo | resposta |
+| --- | --- | --- |
+| `POST /api/auth/mfa/iniciar` | — | `{"secret": "...", "otpauth_uri": "otpauth://totp/..."}` |
+| `POST /api/auth/mfa/confirmar` | `{"codigo": "123456"}` | `{"codigos": ["a1b2c-3d4e5", ...]}` |
+| `POST /api/auth/mfa/desativar` | `{"senha": "...", "codigo": "123456"}` | 204 |
+
+`/mfa/iniciar` grava o segredo **sem ativar nada**: um segredo que o app não
+guardou (QR code fechado antes da hora, celular sem bateria) não pode passar a
+ser exigido no login seguinte. Chamar de novo antes de confirmar **substitui** o
+segredo — quem perdeu o QR code no meio do cadastro recomeça, e um segredo não
+confirmado não protege nada. Com MFA já ativado, responde 409.
+
+`/mfa/confirmar` é o que ativa, e só com a prova de que o app guardou o segredo.
+Ele devolve os **códigos de recuperação** (`MFA_CODIGOS_RECUPERACAO`, 8) — a
+única vez em que eles existem em claro. O banco guarda só o hash Argon2id: não
+há endpoint que os mostre de novo.
+
+`/mfa/desativar` exige **senha e código**, os dois. Com só o código, uma sessão
+sequestrada desligaria o segundo fator sozinha, que é exatamente o que ele
+existe para impedir; com só a senha, bastaria a senha vazada, que é a hipótese
+que faz alguém ativar MFA. Senha errada e código errado respondem o mesmo 422.
+
+Os três exigem **sessão de usuário**: requisição por `X-API-Key` responde 403 —
+chave de máquina não tem celular nem app autenticador.
+
+#### Login em duas etapas
+
+Com MFA ativado, `POST /api/auth/login` deixa de devolver o usuário:
+
+```text
+POST /api/auth/login      -> 200 {"mfa_pendente": true}   + cookie de sessão PENDENTE
+POST /api/auth/mfa/verificar  {"codigo": "123456"}  -> 200 {usuário}
+```
+
+A sessão do primeiro passo **não abre rota nenhuma** de `/api/*`:
+`auth/sessoes.resolver_sessao` devolve `None` para sessão pendente, e é isso que
+faz o segundo fator não ser uma tela que dá para pular. Só
+`POST /api/auth/mfa/verificar` a enxerga (por `resolver_sessao_pendente`), e por
+isso essa rota é pública: a credencial que ela consome é justamente o cookie que
+o resto da API recusa.
+
+`/mfa/verificar` aceita o código de seis dígitos **ou** um código de
+recuperação, que é de uso único. Falha nos dois responde 401 **e conta em
+`tentativas_login`**: são seis dígitos, e o freio da issue #33 ("Bloqueio por
+tentativa de login", acima) é o que os protege — sem essa contagem o segundo
+fator viraria o alvo mais barato do sistema.
+
+**O mesmo código não funciona duas vezes.** O passo TOTP aceito é gravado em
+`usuarios.mfa_ultimo_passo`, e códigos daquele passo ou anteriores passam a ser
+recusados. Sem isso, o mesmo código valeria durante toda a janela de tolerância
+(`MFA_JANELA_PASSOS`, ±30s) e quem o interceptasse teria ~90 segundos para
+reusá-lo.
+
+#### Configuração
+
+```bash
+MFA_EMISSOR=HomeCareOS       # nome mostrado no app autenticador e no QR code
+MFA_JANELA_PASSOS=1          # tolerância de relógio: ±1 passo (±30s)
+MFA_CODIGOS_RECUPERACAO=8    # quantos códigos a ativação gera
+```
+
+#### Limitações honestas
+
+- **O segredo TOTP fica em claro no banco** (`usuarios.mfa_secret`). Com um
+  dump, o atacante gera códigos válidos — o segundo fator não resiste a quem já
+  tem o banco. Não há KMS neste projeto, e "criptografar" com uma chave guardada
+  no mesmo `.env` que acompanha o dump seria teatro: quem tem o banco geralmente
+  tem a configuração. A limitação é **declarada**, não escondida; fechá-la de
+  verdade é KMS/HSM, com a sua própria issue.
+- **Não há como reemitir código de recuperação sem desativar o MFA.** Quem
+  perder a lista junto com o celular precisa de quem administre o banco: os
+  códigos só existem em claro no momento da ativação.
+- **Não há política que obrigue MFA.** Ativar é decisão de cada pessoa; não
+  existe configuração que o exija por papel ou para a operação inteira. Isso é
+  requisito de produto, e inventá-lo aqui trancaria gente para fora sem ninguém
+  ter decidido.
+
 ### Criar o primeiro usuário
 
 ```bash
@@ -308,7 +398,9 @@ que a ausência:
 - **recuperação de senha só com SMTP configurado**: ela existe desde a issue #34
   (ver "Recuperação de senha por e-mail" acima), mas sem `SMTP_HOST`/
   `SMTP_REMETENTE` fica desligada e o caminho volta a ser o CLI;
-- **sem MFA**;
+- **sem política que obrigue MFA**: o segundo fator existe desde a issue #35
+  (ver "Segundo fator (MFA por TOTP)" acima), mas ativar é decisão de cada
+  pessoa — não há configuração que o exija por papel ou para a operação inteira;
 - **sem CRUD de usuário via API**: criar, editar, desativar e listar usuário é
   operação de banco ou CLI. A matriz aprovada não diz quem administra usuário, e
   decidir isso sem o cliente seria inventar requisito — um `POST /api/usuarios`

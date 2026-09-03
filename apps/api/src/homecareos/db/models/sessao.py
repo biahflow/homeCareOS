@@ -19,7 +19,7 @@ prontuário clínico não pode esperar um token expirar — ver o ADR 0001.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -49,6 +49,15 @@ class Sessao(Base):
     # administrativa; a linha é preservada em vez de apagada para a sessão
     # revogada continuar visível em auditoria.
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # `True` entre o primeiro e o segundo passo do login de quem tem MFA
+    # ativado (issue #35). Enquanto for `True`, `sessoes.resolver_sessao`
+    # devolve `None` e a sessão não abre rota nenhuma de `/api/*` — é o que
+    # impede o segundo fator de ser uma tela que dá para pular. Só
+    # `POST /api/auth/mfa/verificar` enxerga esta sessão, por
+    # `sessoes.resolver_sessao_pendente`.
+    mfa_pendente: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

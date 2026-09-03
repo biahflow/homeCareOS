@@ -114,6 +114,19 @@ class Settings(BaseSettings):
     # `auth/senhas.validar_forca`).
     senha_minima_caracteres: int = 12
 
+    # Segundo fator por TOTP em app autenticador (issue #35). Ver `auth/mfa.py`
+    # e a seção "Segundo fator (MFA por TOTP)" do README de apps/api.
+    # Emissor mostrado no app autenticador, no QR code e na lista de contas.
+    mfa_emissor: str = "HomeCareOS"
+    # Tolerância de passos TOTP para relógio dessincronizado. 1 = aceita o passo
+    # anterior e o seguinte (±30s). Subir isto alarga a janela de quem
+    # intercepta o código: cada passo a mais são 30 segundos a mais de vida
+    # para um código já visto.
+    mfa_janela_passos: int = 1
+    # Quantos códigos de recuperação a ativação gera. São a única saída de quem
+    # perdeu o celular, e são mostrados uma única vez.
+    mfa_codigos_recuperacao: int = 8
+
     # Gateway de WhatsApp (uazapi). Base URL vazia OU token vazio desabilita
     # todo o envio de alerta — o sistema segue funcionando, só não notifica.
     uazapi_base_url: str = ""

@@ -32,6 +32,12 @@ A recuperação de senha (issue #34) leva o mesmo princípio ao extremo:
 `POST /senha/esqueci` responde **204 sempre** — e-mail que não existe, usuário
 inativo, teto de envios atingido, SMTP não configurado e até falha de envio.
 Ver a docstring do endpoint.
+
+Com MFA ativado (issue #35), o login passa a ter **duas etapas**: o primeiro
+passo aceita a senha e cria uma sessão `mfa_pendente=True`, que não abre rota
+nenhuma de `/api/*` (`auth/sessoes.resolver_sessao` a recusa); o segundo,
+`POST /mfa/verificar`, é o único que enxerga essa sessão. Quem não tem MFA
+ativado continua logando em uma etapa, com o comportamento intacto.
 """
 
 from __future__ import annotations
@@ -42,22 +48,28 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from homecareos.api.auth import MENSAGEM_CREDENCIAL_INVALIDA
-from homecareos.auth import protecao, recuperacao, senhas, sessoes
+from homecareos.auth import mfa, protecao, recuperacao, senhas, sessoes
 from homecareos.auth.dependencies import principal_atual, token_de_sessao
 from homecareos.auth.schema import (
     EsqueciSenhaRequest,
     LoginRequest,
     MaquinaOut,
+    MfaCodigosRecuperacaoOut,
+    MfaConfirmarRequest,
+    MfaDesativarRequest,
+    MfaIniciarOut,
+    MfaPendenteOut,
+    MfaVerificarRequest,
     Principal,
     RedefinirSenhaRequest,
     UsuarioOut,
 )
 from homecareos.config import Settings, get_settings
-from homecareos.db.models import Usuario
+from homecareos.db.models import CodigoRecuperacaoMfa, Usuario
 from homecareos.db.session import get_session
 from homecareos.mailer.errors import EnvioEmailError
 from homecareos.mailer.provider import EmailProvider, get_email_provider
@@ -76,6 +88,22 @@ MENSAGEM_BLOQUEIO = "muitas tentativas de login; tente novamente mais tarde"
 MENSAGEM_TOKEN_INVALIDO = "token inválido ou expirado"
 
 ASSUNTO_RECUPERACAO = "HomeCareOS — redefinição de senha"
+
+# Mensagem do 422 do MFA. Única para código TOTP errado, código de recuperação
+# errado e — em `/mfa/desativar` — senha errada: três mensagens diriam a quem
+# está com a sessão de outra pessoa qual metade da credencial ele já tem.
+MENSAGEM_MFA_CODIGO_INVALIDO = "código inválido"
+
+# Mensagem do 409 de `/mfa/iniciar` e `/mfa/desativar`. Aqui não há o que
+# esconder: quem chegou até estes endpoints já está autenticado como a própria
+# pessoa, e "seu MFA já está ativo" é o que faz o frontend mostrar a tela certa.
+MENSAGEM_MFA_JA_ATIVO = "o segundo fator já está ativado nesta conta"
+MENSAGEM_MFA_NAO_ATIVO = "o segundo fator não está ativado nesta conta"
+
+# Mensagem do 403 dos endpoints de gestão de MFA para `X-API-Key`. Chave de
+# máquina não tem celular, não tem app autenticador e não tem segundo fator
+# para configurar — ver `_usuario_da_sessao`.
+MENSAGEM_MFA_SO_USUARIO = "o segundo fator é configurado por sessão de usuário"
 
 
 def normalizar_email(email: str) -> str:
@@ -115,12 +143,15 @@ def _setar_cookie(response: Response, settings: Settings, token: str) -> None:
 
 @router.post(
     "/login",
-    response_model=UsuarioOut,
+    response_model=UsuarioOut | MfaPendenteOut,
     summary="Autentica por e-mail e senha e abre uma sessão",
     description=(
-        "Sucesso: cria a sessão, devolve o cookie `httpOnly` e o usuário. "
-        "Falha: 401 com o mesmo corpo, seja qual for o motivo. Origem com "
-        "muitas falhas recentes: 429."
+        "Sucesso sem MFA: cria a sessão, devolve o cookie `httpOnly` e o "
+        "usuário. Sucesso com MFA ativado: cria a sessão **pendente**, devolve "
+        'o cookie e `{"mfa_pendente": true}` — sem dado nenhum do usuário — e '
+        "o login só se completa em `POST /api/auth/mfa/verificar`. Falha: 401 "
+        "com o mesmo corpo, seja qual for o motivo. Origem com muitas falhas "
+        "recentes: 429."
     ),
 )
 def login(
@@ -130,7 +161,7 @@ def login(
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     token_anterior: Annotated[str | None, Depends(token_de_sessao)] = None,
-) -> UsuarioOut:
+) -> UsuarioOut | MfaPendenteOut:
     agora = datetime.now(UTC)
     email = normalizar_email(corpo.email)
     ip = protecao.ip_do_request(request, settings)
@@ -172,6 +203,21 @@ def login(
     # ser deslogado por errar a senha uma vez é comportamento que ninguém espera.
     if token_anterior is not None:
         sessoes.revogar(session, token_anterior, agora=agora)
+
+    # Com MFA ativado, a senha correta compra apenas a sessão pendente: ela tem
+    # cookie, existe no banco e não abre rota nenhuma de `/api/*` até
+    # `POST /mfa/verificar` aceitar o segundo fator. A resposta não carrega dado
+    # nenhum do usuário — quem parou no primeiro fator ainda não provou quem é.
+    if usuario.mfa_ativado:
+        _, token = sessoes.criar_sessao(
+            session,
+            usuario,
+            duracao_horas=settings.sessao_duracao_horas,
+            agora=agora,
+            mfa_pendente=True,
+        )
+        _setar_cookie(response, settings, token)
+        return MfaPendenteOut()
 
     _, token = sessoes.criar_sessao(
         session, usuario, duracao_horas=settings.sessao_duracao_horas, agora=agora
@@ -427,4 +473,303 @@ def redefinir_senha(
     # está certo: não há como saber qual das abertas é dela.
     sessoes.revogar_todas(session, usuario.id, agora=agora)
     recuperacao.marcar_usado(session, corpo.token, agora=agora)
+    session.commit()
+
+
+# --- segundo fator (MFA por TOTP, issue #35) ---------------------------------
+
+
+@router.post(
+    "/mfa/verificar",
+    response_model=UsuarioOut,
+    summary="Completa o login apresentando o segundo fator",
+    description=(
+        "Lê a sessão **pendente** pelo cookie e aceita o código de seis "
+        "dígitos do app autenticador ou um código de recuperação. Sucesso: a "
+        "sessão deixa de ser pendente e passa a abrir `/api/*`. Falha: 401, "
+        "e a tentativa conta para o bloqueio por força bruta."
+    ),
+)
+def verificar_mfa(
+    corpo: MfaVerificarRequest,
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    token: Annotated[str | None, Depends(token_de_sessao)] = None,
+) -> UsuarioOut:
+    """Rota **pública**, e é decisão consciente.
+
+    A credencial que ela consome é o cookie da sessão pendente, que
+    `principal_atual` recusa por construção (`sessoes.resolver_sessao` devolve
+    `None` para sessão pendente). Exigir `principal_atual` aqui seria exigir a
+    sessão completa para poder completar a sessão — o segundo passo do login
+    nunca seria alcançável. Ela está declarada em `ROTAS_PUBLICAS`, em
+    `tests/test_auth.py`, com essa razão.
+
+    **A falha registra tentativa E esta rota consulta o bloqueio da issue #33**,
+    devolvendo 429 quando a conta ou a origem já estouraram o limite.
+
+    Registrar sem consultar não bastaria, e a diferença é o que decide se o
+    segundo fator vale alguma coisa. Quem chega aqui **já tem a senha** — o
+    cookie pendente só existe porque o primeiro passo passou —, então o MFA é a
+    última linha, e são seis dígitos. Se esta rota só contasse as falhas, elas
+    trancariam o *login seguinte*, que o atacante não precisa fazer: ele já
+    está com a sessão pendente na mão e pode sondar à vontade até ela expirar
+    (`SESSAO_DURACAO_HORAS`, 12h por padrão). Com a consulta, a trava de conta
+    corta a sondagem em `LOGIN_FALHAS_PARA_TRAVAR_CONTA` tentativas por janela.
+
+    O atraso progressivo do login não é aplicado aqui de propósito: quem chega
+    nesta rota já pagou o atraso do primeiro passo, e o que contém a sondagem é
+    a trava, não o atraso.
+
+    Sem cookie, com sessão que não é pendente, expirada, revogada ou de usuário
+    desativado: **o mesmo 401** de credencial inválida. Distinguir esses casos
+    diria a quem tem um cookie velho por que ele não vale.
+    """
+    agora = datetime.now(UTC)
+    if token is None:
+        raise _credencial_invalida()
+
+    pendente = sessoes.resolver_sessao_pendente(session, token, agora=agora)
+    if pendente is None:
+        raise _credencial_invalida()
+    sessao_pendente, usuario = pendente
+
+    ip = protecao.ip_do_request(request, settings)
+
+    # Antes de conferir o código, e não depois: o ponto é não deixar a sondagem
+    # continuar de graça. Mesma mensagem genérica do 429 do login.
+    bloqueio = protecao.avaliar_bloqueio(
+        session, email=usuario.email, ip=ip, settings=settings, agora=agora
+    )
+    if bloqueio is not None:
+        raise _bloqueado(bloqueio)
+
+    # O TOTP primeiro, o código de recuperação só depois: o segundo é finito e
+    # é a saída de quem perdeu o celular — gastá-lo enquanto o app funciona
+    # seria queimar a reserva de quem digitou o código certo com um dígito
+    # trocado.
+    passo: int | None = None
+    if usuario.mfa_secret is not None:
+        passo = mfa.verificar_codigo(
+            usuario.mfa_secret,
+            corpo.codigo,
+            agora=agora,
+            janela=settings.mfa_janela_passos,
+            ultimo_passo=usuario.mfa_ultimo_passo,
+        )
+    aceito = passo is not None
+    if not aceito:
+        aceito = mfa.consumir_codigo_recuperacao(session, usuario.id, corpo.codigo)
+
+    if not aceito:
+        protecao.registrar_tentativa(session, email=usuario.email, ip=ip, sucesso=False)
+        session.commit()
+        raise _credencial_invalida()
+
+    # O passo aceito é gravado **antes** de a sessão ser completada, no mesmo
+    # commit: é ele o anti-replay (ver `auth/mfa.verificar_codigo`). Só há passo
+    # quando o caminho foi TOTP — código de recuperação não tem passo, e o seu
+    # uso único já foi marcado por `consumir_codigo_recuperacao`.
+    if passo is not None:
+        usuario.mfa_ultimo_passo = passo
+    sessao_pendente.mfa_pendente = False
+    protecao.registrar_tentativa(session, email=usuario.email, ip=ip, sucesso=True)
+    session.commit()
+    return UsuarioOut.model_validate(usuario)
+
+
+def _usuario_da_sessao(principal: Principal, session: Session) -> Usuario:
+    """O usuário por trás da sessão, ou 403 para `X-API-Key`.
+
+    Os endpoints de gestão de MFA exigem **pessoa**: chave de máquina não tem
+    celular nem app autenticador, e não há segundo fator para configurar nela.
+    O 403 (e não 401) é o status correto: a credencial é válida, a operação é
+    que não se aplica a ela.
+    """
+    if principal.tipo == "maquina" or principal.usuario_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=MENSAGEM_MFA_SO_USUARIO,
+        )
+    usuario = session.get(Usuario, principal.usuario_id)
+    if usuario is None:  # a sessão só resolve com o usuário existindo; guarda para o mypy
+        raise _credencial_invalida()
+    return usuario
+
+
+@router.post(
+    "/mfa/iniciar",
+    response_model=MfaIniciarOut,
+    summary="Gera o segredo TOTP para cadastrar no app autenticador",
+    description=(
+        "Devolve o segredo e a URI `otpauth://` do QR code. **Não ativa nada**: "
+        "a ativação é `POST /api/auth/mfa/confirmar`. Com MFA já ativado: 409."
+    ),
+)
+def iniciar_mfa(
+    principal: Annotated[Principal, Depends(principal_atual)],
+    session: Annotated[Session, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> MfaIniciarOut:
+    """Grava o segredo **sem ativar**, e chamar de novo o **substitui**.
+
+    Gravar sem ativar é o que impede alguém de se trancar para fora: um segredo
+    que o app não guardou (QR code fechado antes da hora, celular sem bateria)
+    não pode passar a ser exigido no login seguinte. Enquanto `mfa_ativado` for
+    `False`, o segredo não exige nada de ninguém.
+
+    Pela mesma razão a segunda chamada substitui a primeira: quem perdeu o QR
+    code no meio do cadastro precisa recomeçar, e um segredo não confirmado não
+    protege nada — preservá-lo só criaria um estado impossível de sair sem
+    suporte.
+
+    Com MFA **já ativado**, 409: substituir o segredo de quem já usa o segundo
+    fator, com uma sessão que pode ser sequestrada, seria trocar a credencial
+    por outra sem provar nada. Desativar (com senha e código) e ativar de novo é
+    o caminho.
+    """
+    usuario = _usuario_da_sessao(principal, session)
+    if usuario.mfa_ativado:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=MENSAGEM_MFA_JA_ATIVO,
+        )
+
+    segredo = mfa.gerar_segredo()
+    usuario.mfa_secret = segredo
+    session.commit()
+    return MfaIniciarOut(
+        secret=segredo,
+        otpauth_uri=mfa.uri_otpauth(segredo, email=usuario.email, emissor=settings.mfa_emissor),
+    )
+
+
+@router.post(
+    "/mfa/confirmar",
+    response_model=MfaCodigosRecuperacaoOut,
+    summary="Ativa o segundo fator provando que o app guardou o segredo",
+    description=(
+        "Valida o código contra o segredo gravado por `/mfa/iniciar`, ativa o "
+        "MFA e devolve os códigos de recuperação — **a única vez** em que eles "
+        "existem em claro. Código errado: 422, e nada é ativado."
+    ),
+)
+def confirmar_mfa(
+    corpo: MfaConfirmarRequest,
+    principal: Annotated[Principal, Depends(principal_atual)],
+    session: Annotated[Session, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> MfaCodigosRecuperacaoOut:
+    """Ativa só com a prova, e grava o passo do código usado.
+
+    O passo vai para `mfa_ultimo_passo` no mesmo commit da ativação porque o
+    anti-replay começa aqui: sem isso, o código digitado na tela de cadastro
+    ainda valeria no primeiro login, e quem o tivesse visto por cima do ombro
+    entraria com ele.
+
+    Os códigos de recuperação de uma ativação anterior são apagados antes de os
+    novos entrarem. Códigos de duas ativações diferentes conviverem seria uma
+    lista que a pessoa não sabe que tem — e que ela não pode nem conferir,
+    porque o banco só guarda o hash.
+    """
+    agora = datetime.now(UTC)
+    usuario = _usuario_da_sessao(principal, session)
+    if usuario.mfa_secret is None:
+        # Nada iniciado: mesmo 422 do código errado, porque é o mesmo desfecho
+        # para quem chama — não há o que confirmar.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=MENSAGEM_MFA_CODIGO_INVALIDO,
+        )
+
+    passo = mfa.verificar_codigo(
+        usuario.mfa_secret,
+        corpo.codigo,
+        agora=agora,
+        janela=settings.mfa_janela_passos,
+        ultimo_passo=usuario.mfa_ultimo_passo,
+    )
+    if passo is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=MENSAGEM_MFA_CODIGO_INVALIDO,
+        )
+
+    codigos = mfa.gerar_codigos_recuperacao(settings.mfa_codigos_recuperacao)
+    session.execute(
+        delete(CodigoRecuperacaoMfa).where(CodigoRecuperacaoMfa.usuario_id == usuario.id)
+    )
+    for codigo in codigos:
+        session.add(
+            CodigoRecuperacaoMfa(
+                usuario_id=usuario.id,
+                codigo_hash=senhas.gerar_hash(mfa.normalizar_codigo_recuperacao(codigo)),
+            )
+        )
+    usuario.mfa_ativado = True
+    usuario.mfa_ultimo_passo = passo
+    session.commit()
+    return MfaCodigosRecuperacaoOut(codigos=codigos)
+
+
+@router.post(
+    "/mfa/desativar",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Desliga o segundo fator (exige senha E código atual)",
+    description=(
+        "Exige os **dois** fatores no corpo: senha e código. Limpa o segredo, "
+        "a flag, o passo e os códigos de recuperação. Senha ou código errado: "
+        "422 com a mesma mensagem. MFA não ativado: 409."
+    ),
+)
+def desativar_mfa(
+    corpo: MfaDesativarRequest,
+    principal: Annotated[Principal, Depends(principal_atual)],
+    session: Annotated[Session, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """Senha **e** código, e não um dos dois.
+
+    Com só o código, uma sessão sequestrada desligaria o segundo fator sozinha —
+    exatamente o que ele existe para impedir. Com só a senha, bastaria a senha
+    vazada, que é a hipótese que faz alguém ativar MFA. Exigir os dois é o que
+    torna a desativação tão cara quanto a invasão que ela permitiria.
+
+    Senha errada e código errado respondem o **mesmo** 422: duas mensagens
+    diriam a quem está com a sessão de outra pessoa qual metade da credencial
+    ele já tem.
+
+    O segredo é apagado junto com a flag, e não guardado "para o caso de
+    religar": segredo órfão de MFA desligado só serve para vazar num dump
+    depois. Religar é `POST /mfa/iniciar` de novo, com um segredo novo.
+    """
+    agora = datetime.now(UTC)
+    usuario = _usuario_da_sessao(principal, session)
+    if not usuario.mfa_ativado or usuario.mfa_secret is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=MENSAGEM_MFA_NAO_ATIVO,
+        )
+
+    senha_ok = senhas.verificar(usuario.senha_hash, corpo.senha)
+    passo = mfa.verificar_codigo(
+        usuario.mfa_secret,
+        corpo.codigo,
+        agora=agora,
+        janela=settings.mfa_janela_passos,
+        ultimo_passo=usuario.mfa_ultimo_passo,
+    )
+    if not senha_ok or passo is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=MENSAGEM_MFA_CODIGO_INVALIDO,
+        )
+
+    usuario.mfa_ativado = False
+    usuario.mfa_secret = None
+    usuario.mfa_ultimo_passo = None
+    session.execute(
+        delete(CodigoRecuperacaoMfa).where(CodigoRecuperacaoMfa.usuario_id == usuario.id)
+    )
     session.commit()

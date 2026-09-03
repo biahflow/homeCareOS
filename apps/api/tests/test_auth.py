@@ -158,6 +158,11 @@ ROTAS_PUBLICAS = {
     "/api/auth/senha/esqueci",
     # A credencial aqui é o token que chegou por e-mail, não a sessão.
     "/api/auth/senha/redefinir",
+    # A credencial aqui é o cookie da sessão PENDENTE de MFA (issue #35), que
+    # `principal_atual` recusa por construção — `sessoes.resolver_sessao`
+    # devolve `None` para sessão pendente. Exigir sessão completa neste
+    # endpoint seria exigir justamente a sessão que só ele consegue completar.
+    "/api/auth/mfa/verificar",
 }
 
 
