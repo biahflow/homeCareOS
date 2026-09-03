@@ -27,6 +27,9 @@ docker compose run --rm api-migrate
 docker compose run --rm api-seed
 ```
 
+`api-seed` popula as operadoras conhecidas **e** o catálogo de regras (ver
+"Catálogo de regras" em `apps/api/README.md`).
+
 Para derrubar tudo, incluindo os volumes de dados:
 
 ```bash
