@@ -127,3 +127,85 @@ incompleto crítico sai já na classificação, sem esperar a varredura. O ganch
 síncrono e está no caminho do upload (teto: `ALERTAS_TIMEOUT_SEGUNDOS`), abre a
 própria sessão e **nunca levanta**: notificação não pode derrubar ingestão de
 documento. `false` desliga o gancho e deixa o caso para a varredura periódica.
+
+## Autenticação
+
+Duas credenciais convivem, e não se substituem (ADR 0001, issue #30):
+
+| credencial | quem usa | como |
+| --- | --- | --- |
+| **Sessão de usuário** | pessoas, pelo navegador | `POST /api/auth/login` devolve um cookie `httpOnly`; a sessão vive na tabela `sessoes` |
+| **`X-API-Key`** | integração máquina-a-máquina | header, como antes — é o que o cron `python -m homecareos.alerts.scan` usa |
+
+A sessão tem estado no Postgres (e não é um JWT) por causa da revogação:
+desligar o acesso de alguém a prontuário clínico não pode esperar um token
+expirar. Desativar o usuário (`usuarios.ativo = false`) derruba o acesso na
+requisição seguinte.
+
+A senha é hasheada com **Argon2id** e nunca é gravada, logada nem devolvida em
+claro. O cookie carrega um token opaco de 256 bits; o banco guarda só o SHA-256
+dele — um dump vazado não entrega sessão utilizável.
+
+`POST /api/auth/login` é a única rota de `/api/*` que nasce sem exigir
+credencial (não dá para exigir sessão para criar sessão). Login com e-mail
+inexistente, senha errada e usuário inativo respondem **exatamente igual**, e o
+caminho do e-mail inexistente ainda gasta uma verificação Argon2 descartável —
+sem isso, o tempo de resposta diria quem está cadastrado.
+
+### Matriz de papéis
+
+| rota | conferente | coordenador | gestor |
+| --- | :-: | :-: | :-: |
+| `POST /api/documentos` | ✅ | ✅ | — |
+| `GET /api/documentos`, `GET /api/documentos/{id}` | ✅ | ✅ | ✅ |
+| `POST /api/documentos/{id}/revalidar` | ✅ | ✅ | — |
+| `GET /api/pendencias`, `/resumo` | ✅ | ✅ | ✅ |
+| `PATCH /api/pendencias/{id}` | ✅ | ✅ | — |
+| `GET /api/operadoras`, `GET /api/pacientes` | ✅ | ✅ | ✅ |
+| `/api/regras` (todos os métodos) | — | ✅ | — |
+| `GET /api/relatorios/conferencia`, `.csv` | ✅ | ✅ | ✅ |
+| `GET /api/relatorios/metricas`, `GET /api/relatorios/baseline` | — | ✅ | ✅ |
+| `PUT /api/relatorios/baseline` | — | — | ✅ |
+| `POST /api/alertas/varredura`, `GET /api/alertas` | — | ✅ | ✅ |
+
+`conferente` está contido em `coordenador`. `gestor` **não** é superconjunto de
+ninguém: é outro eixo — lê a operação inteira, não a executa, e é o único que
+escreve baseline, que é dado de gestão e não de conferência.
+
+**A autorização por papel só se aplica a sessão de usuário.** Requisição
+autenticada por `X-API-Key` passa por qualquer checagem de papel: a chave sempre
+deu acesso total a `/api/*` e é dela que dependem as integrações existentes.
+Estreitá-la é outra decisão, com outro ADR — não um ajuste desta trilha.
+
+`POST /api/pacientes` não consta da matriz aprovada e por isso herda a regra do
+router (os três papéis), que é o comportamento que já existia.
+
+### Criar o primeiro usuário
+
+```bash
+cd apps/api
+uv run python -m homecareos.auth.cli criar \
+  --nome "Ana Souza" --email ana@exemplo.com --papel coordenador
+# Senha: (lida por prompt, sem eco)
+```
+
+A senha **nunca** vem em argumento de linha de comando: ali ela ficaria no
+histórico do shell e apareceria em `ps` para qualquer outro usuário da máquina.
+Papel inválido e e-mail duplicado saem com código 1 e mensagem clara.
+
+### Limitações conhecidas
+
+Esta entrega **não** tem, e é deliberado — cada um destes itens é decisão de
+produto/segurança que merece a sua própria issue, e uma versão frouxa seria pior
+que a ausência:
+
+- **sem bloqueio por tentativa de login e sem rate limit**: força bruta contra a
+  API não é freada pela aplicação hoje;
+- **sem recuperação de senha**: quem esquece a senha depende de alguém rodar o
+  CLI de novo;
+- **sem MFA**;
+- **sem CRUD de usuário via API**: criar, editar, desativar e listar usuário é
+  operação de banco ou CLI. A matriz aprovada não diz quem administra usuário, e
+  decidir isso sem o cliente seria inventar requisito — um `POST /api/usuarios`
+  aberto ao papel errado deixaria qualquer um criar um `gestor` e escalar
+  sozinho.

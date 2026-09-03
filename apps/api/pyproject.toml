@@ -23,6 +23,10 @@ dependencies = [
   # alertas). Sai do grupo `dev` — onde entrara só para o TestClient do
   # FastAPI — porque agora é dependência de runtime da aplicação.
   "httpx>=0.28,<1",
+  # Hash de senha de usuário (Argon2id, issue #30). Senha escolhida por pessoa
+  # exige função lenta e com sal — o `hmac.compare_digest` de `api/auth.py`
+  # resolve o problema oposto (segredo de máquina, de alta entropia).
+  "argon2-cffi>=23.1,<25",
 ]
 
 [dependency-groups]

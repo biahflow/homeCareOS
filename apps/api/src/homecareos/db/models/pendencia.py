@@ -40,7 +40,16 @@ class Pendencia(Base):
     # reconciliação casar coisas que não são a mesma.
     campo: Mapped[str | None] = mapped_column(String, nullable=True)
     descricao: Mapped[str] = mapped_column(String, nullable=False)
+    # Rótulo legível do responsável — continua aceitando texto livre
+    # (`"equipe-conferencia"`, o padrão da classificação automática).
     responsavel: Mapped[str] = mapped_column(String, nullable=False)
+    # A identidade referencial do responsável, quando a pendência foi atribuída
+    # a uma pessoa cadastrada. Nullable pelo mesmo motivo de
+    # `log_conferencia.usuario_id`: pendência aberta pela classificação não tem
+    # pessoa, e inventar uma seria mentir sobre quem está cobrando o quê.
+    responsavel_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("usuarios.id"), nullable=True
+    )
     status: Mapped[PendenciaStatus] = mapped_column(
         SAEnum(
             PendenciaStatus,

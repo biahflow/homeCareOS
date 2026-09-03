@@ -1,10 +1,27 @@
-"""Composição da aplicação FastAPI: routers, autenticação e tratamento de erro.
+"""Composição da aplicação FastAPI: routers, autorização e tratamento de erro.
 
 `create_app()` é uma factory (em vez de um único `app` module-level fixo) para
 que o teste do critério de aceite 3 — `api_keys` vazio com
 `environment="production"` recusa subir — consiga construir uma aplicação a
 partir de `Settings` arbitrárias sem depender de variável de ambiente do
 processo de teste.
+
+**A autorização por papel é aplicada aqui, por router** (issue #30), no lugar
+onde antes ficava `require_api_key`: um endpoint novo nasce protegido por
+construção, sem depender de alguém lembrar de proteger cada rota — é a mesma
+regra que a docstring de `api/auth.py` já justificava.
+
+`exigir_papel(...)` **não** substitui a chave de API: ela continua válida e
+continua dando acesso total, porque é a credencial máquina-a-máquina de que o
+cron `python -m homecareos.alerts.scan` depende. Papel só filtra sessão de
+usuário — a justificativa completa está na docstring de
+`auth/dependencies.exigir_papel`.
+
+Onde um router mistura capacidades de papéis diferentes, o router leva a regra
+mais larga e o endpoint restritivo leva a sua própria, declarada nele mesmo
+(`POST /api/documentos/{id}/revalidar`, `PATCH /api/pendencias/{id}` e os
+relatórios de gestão). É exceção consciente à regra "auth por router", anotada
+em cada endpoint.
 """
 
 from __future__ import annotations
@@ -14,12 +31,14 @@ import logging
 from fastapi import Depends, FastAPI
 
 from homecareos.alerts.router import router as alertas_router
-from homecareos.api.auth import require_api_key
 from homecareos.api.errors import register_exception_handlers
 from homecareos.api.routers.documentos import router as documentos_router
 from homecareos.api.routers.operadoras import router as operadoras_router
 from homecareos.api.routers.pacientes import router as pacientes_router
 from homecareos.api.routers.pendencias import router as pendencias_router
+from homecareos.auth.dependencies import exigir_papel
+from homecareos.auth.router import router as auth_router
+from homecareos.auth.schema import Papel
 from homecareos.config import Settings, get_settings
 from homecareos.intake.router import router as intake_router
 from homecareos.reports.router import router as relatorios_router
@@ -59,23 +78,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="HomeCareOS API",
         description=(
             "API de conferência pré-faturamento do HomeCareOS. Toda rota sob "
-            "`/api/*` exige o header `X-API-Key`; `/health` é a única exceção "
-            "(sonda de infraestrutura)."
+            "`/api/*` exige credencial — sessão de usuário (cookie `httpOnly`, "
+            "obtida em `POST /api/auth/login`) ou o header `X-API-Key` da "
+            "integração máquina-a-máquina. `/health` e `POST /api/auth/login` "
+            "são as únicas exceções."
         ),
     )
 
     register_exception_handlers(app)
 
-    app.include_router(intake_router, dependencies=[Depends(require_api_key)])
-    app.include_router(documentos_router, dependencies=[Depends(require_api_key)])
-    app.include_router(pendencias_router, dependencies=[Depends(require_api_key)])
-    app.include_router(operadoras_router, dependencies=[Depends(require_api_key)])
-    app.include_router(pacientes_router, dependencies=[Depends(require_api_key)])
+    todos_os_papeis = (Papel.CONFERENTE, Papel.COORDENADOR, Papel.GESTOR)
+
+    # `POST /api/auth/login` é a única rota de `/api/*` que nasce sem exigir
+    # credencial, e a razão é a que parece: não dá para exigir sessão para criar
+    # sessão. `/logout` acompanha o mesmo router porque um logout que respondesse
+    # 401 para cookie expirado deixaria o navegador preso com um cookie que ele
+    # não consegue nem descartar; `GET /api/auth/eu` exige credencial por conta
+    # própria, na dependency do endpoint.
+    app.include_router(auth_router)
+
+    app.include_router(
+        intake_router,
+        dependencies=[Depends(exigir_papel(Papel.CONFERENTE, Papel.COORDENADOR))],
+    )
+    # Ler documento é dos três; revalidar é ação de conferência e declara a
+    # restrição no próprio endpoint.
+    app.include_router(documentos_router, dependencies=[Depends(exigir_papel(*todos_os_papeis))])
+    # Ler pendência é dos três; transicionar declara a restrição no endpoint.
+    app.include_router(pendencias_router, dependencies=[Depends(exigir_papel(*todos_os_papeis))])
+    app.include_router(operadoras_router, dependencies=[Depends(exigir_papel(*todos_os_papeis))])
+    # `POST /api/pacientes` não consta da matriz aprovada e por isso herda a
+    # regra do router (os três papéis), que é o comportamento que já existia com
+    # a chave de API. Estreitá-lo sem o cliente seria inventar requisito.
+    app.include_router(pacientes_router, dependencies=[Depends(exigir_papel(*todos_os_papeis))])
     # O router de regras nasce sem auth própria (é escrito pela trilha do motor
-    # de regras); a proteção é aplicada aqui, como para todos os outros.
-    app.include_router(rules_router, dependencies=[Depends(require_api_key)])
-    app.include_router(relatorios_router, dependencies=[Depends(require_api_key)])
-    app.include_router(alertas_router, dependencies=[Depends(require_api_key)])
+    # de regras); a proteção é aplicada aqui, como para todos os outros. Regra de
+    # glosa é do coordenador: é ela que decide o que reprova um documento.
+    app.include_router(rules_router, dependencies=[Depends(exigir_papel(Papel.COORDENADOR))])
+    # Relatório operacional é dos três; métricas e baseline declaram a restrição
+    # nos próprios endpoints.
+    app.include_router(relatorios_router, dependencies=[Depends(exigir_papel(*todos_os_papeis))])
+    app.include_router(
+        alertas_router,
+        dependencies=[Depends(exigir_papel(Papel.COORDENADOR, Papel.GESTOR))],
+    )
 
     @app.get("/health", summary="Sonda de infraestrutura", tags=["health"])
     def health() -> dict[str, str]:

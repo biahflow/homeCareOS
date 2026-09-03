@@ -106,12 +106,18 @@ def transicionar(
     *,
     usuario: str,
     detalhe: str,
+    usuario_id: uuid.UUID | None = None,
 ) -> None:
     """Transiciona o status e registra a transição em `log_conferencia`. Não commita.
 
     Não commita de propósito: quem chama decide o limite da transação — a
     transição do documento e as pendências que a acompanham precisam entrar
     juntas.
+
+    `usuario_id` é opcional e o default é `None` porque nem toda transição tem
+    pessoa: o dispatcher de extração transiciona como `"sistema"` e a
+    integração por chave de API como `"api"` — nos dois casos não há a quem
+    apontar, e o `None` é a resposta honesta (ver `db/models/log_conferencia.py`).
     """
     anterior = documento.status
     if novo not in _TRANSICOES_VALIDAS.get(anterior, frozenset()):
@@ -125,11 +131,18 @@ def transicionar(
         acao=f"transicao:{anterior.value}->{novo.value}",
         usuario=usuario,
         detalhe=detalhe,
+        usuario_id=usuario_id,
     )
 
 
 def registrar_log(
-    session: Session, *, documento_id: uuid.UUID, acao: str, usuario: str, detalhe: str
+    session: Session,
+    *,
+    documento_id: uuid.UUID,
+    acao: str,
+    usuario: str,
+    detalhe: str,
+    usuario_id: uuid.UUID | None = None,
 ) -> None:
     """Enfileira uma linha de auditoria na sessão. Não commita.
 
@@ -142,6 +155,7 @@ def registrar_log(
             acao=acao,
             usuario=usuario,
             detalhe=detalhe,
+            usuario_id=usuario_id,
         )
     )
 
@@ -152,6 +166,7 @@ def classificar_documento(
     resultados: Sequence[ResultadoAvaliacao],
     *,
     usuario: str,
+    usuario_id: uuid.UUID | None = None,
 ) -> DocumentoStatus:
     """Classifica, transiciona o documento e abre as pendências. Commita."""
     documento = session.get(Documento, documento_id)
@@ -165,15 +180,20 @@ def classificar_documento(
         documento,
         alvo,
         usuario=usuario,
+        usuario_id=usuario_id,
         detalhe=(
             f"classificação automática: {len(classificacao.pendencias)} pendência(s) "
             f"a partir de {len(resultados)} regra(s) avaliada(s)"
         ),
     )
 
-    a_criar = _reconciliar_pendencias(session, documento, classificacao.pendencias, usuario=usuario)
+    a_criar = _reconciliar_pendencias(
+        session, documento, classificacao.pendencias, usuario=usuario, usuario_id=usuario_id
+    )
     if a_criar:
-        deadline = _deadline_das_pendencias(session, documento, usuario=usuario)
+        deadline = _deadline_das_pendencias(
+            session, documento, usuario=usuario, usuario_id=usuario_id
+        )
         responsavel = get_settings().pendencia_responsavel_padrao
         for proposta in a_criar:
             session.add(_pendencia(documento_id, proposta, deadline, responsavel))
@@ -204,6 +224,7 @@ def _reconciliar_pendencias(
     propostas: Sequence[PendenciaProposta],
     *,
     usuario: str,
+    usuario_id: uuid.UUID | None = None,
 ) -> list[PendenciaProposta]:
     """Casa as pendências já abertas com o que a classificação acabou de propor.
 
@@ -246,6 +267,7 @@ def _reconciliar_pendencias(
             documento_id=documento.id,
             acao="pendencia:resolvida_por_revalidacao",
             usuario=usuario,
+            usuario_id=usuario_id,
             detalhe=(
                 f"pendência {pendencia.id} resolvida: o problema deixou de ser "
                 f"apontado pelas regras ativas ({pendencia.descricao})"
@@ -282,7 +304,13 @@ def _status_alvo(atual: DocumentoStatus, bucket: DocumentoStatus) -> DocumentoSt
     return bucket
 
 
-def _deadline_das_pendencias(session: Session, documento: Documento, *, usuario: str) -> datetime:
+def _deadline_das_pendencias(
+    session: Session,
+    documento: Documento,
+    *,
+    usuario: str,
+    usuario_id: uuid.UUID | None = None,
+) -> datetime:
     """Deadline das pendências deste documento, com fallback registrado em log.
 
     `documentos.competencia` é `String` livre, sem constraint de formato, e a
@@ -310,13 +338,14 @@ def _deadline_das_pendencias(session: Session, documento: Documento, *, usuario:
         documento_id=documento.id,
         acao="deadline:fallback",
         usuario=usuario,
+        usuario_id=usuario_id,
         detalhe=f"deadline calculado como fim do dia de hoje: {motivo}",
     )
     return datetime.combine(datetime.now(UTC).date(), time(23, 59, 59), tzinfo=UTC)
 
 
 def revalidar_documento(
-    session: Session, documento_id: uuid.UUID, *, usuario: str
+    session: Session, documento_id: uuid.UUID, *, usuario: str, usuario_id: uuid.UUID | None = None
 ) -> DocumentoStatus:
     """Reavalia a última extração contra as regras ativas e reclassifica. Commita.
 
@@ -357,4 +386,6 @@ def revalidar_documento(
 
     resultados = validar(campos, regras, competencia=documento.competencia)
     registrar_validacoes(session, documento_id, resultados)
-    return classificar_documento(session, documento_id, resultados, usuario=usuario)
+    return classificar_documento(
+        session, documento_id, resultados, usuario=usuario, usuario_id=usuario_id
+    )
