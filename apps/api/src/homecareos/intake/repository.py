@@ -22,7 +22,7 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from homecareos.db.models import Documento, DocumentoStatus, LogConferencia
+from homecareos.db.models import Documento, DocumentoStatus, LogConferencia, Paciente
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,10 @@ class DocumentoRepository(Protocol):
 
     def buscar_por_idempotency_keys(self, chaves: Sequence[str]) -> list[DocumentoRegistrado]:
         """Documentos já existentes para essas chaves, ordenados por página."""
+        ...
+
+    def operadora_do_paciente(self, paciente_id: uuid.UUID) -> uuid.UUID | None:
+        """Operadora do paciente, ou `None` se o paciente não existir."""
         ...
 
     def registrar_log(
@@ -106,6 +110,10 @@ class SqlAlchemyDocumentoRepository:
             .order_by(Documento.pagina)
         )
         return [_registrado(documento) for documento in self.session.execute(stmt).scalars()]
+
+    def operadora_do_paciente(self, paciente_id: uuid.UUID) -> uuid.UUID | None:
+        paciente = self.session.get(Paciente, paciente_id)
+        return paciente.operadora_id if paciente is not None else None
 
     def registrar_log(
         self, *, documento_id: uuid.UUID, acao: str, usuario: str, detalhe: str

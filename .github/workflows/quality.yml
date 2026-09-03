@@ -53,5 +53,11 @@ jobs:
       - name: mypy
         run: uv run mypy src
 
+      - name: alembic upgrade head
+        run: uv run alembic upgrade head
+
+      - name: seed de operadoras
+        run: uv run python -m homecareos.seed
+
       - name: pytest
         run: uv run pytest

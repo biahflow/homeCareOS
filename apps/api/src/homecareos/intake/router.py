@@ -19,6 +19,7 @@ responde 201 com ele em `processando`.
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 from fastapi import (
@@ -86,6 +87,10 @@ def criar_documentos(
     arquivo: Annotated[UploadFile, File(description="PDF, JPEG ou PNG da evolução")],
     competencia: Annotated[str, Form(description="Competência do faturamento, `YYYY-MM`")],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    paciente_id: Annotated[uuid.UUID | None, Form(description="Paciente, quando conhecido")] = None,
+    operadora_id: Annotated[
+        uuid.UUID | None, Form(description="Operadora; derivada do paciente quando omitida")
+    ] = None,
 ) -> UploadResponse:
     """Cria um documento por página do arquivo enviado.
 
@@ -107,6 +112,13 @@ def criar_documentos(
             detail=f"Arquivo acima do limite de {settings.max_upload_bytes} bytes",
         )
 
+    # A operadora decide quais regras de glosa se aplicam ao documento. Sem
+    # ela o motor de regras não roda — por isso, quando o paciente é conhecido
+    # e a operadora não foi informada, ela é derivada do cadastro em vez de
+    # ficar nula e desligar a conferência silenciosamente.
+    if operadora_id is None and paciente_id is not None:
+        operadora_id = repository.operadora_do_paciente(paciente_id)
+
     conteudo = arquivo.file.read()
 
     try:
@@ -115,6 +127,8 @@ def criar_documentos(
             filename=arquivo.filename or "upload",
             competencia=competencia,
             idempotency_key=idempotency_key,
+            paciente_id=paciente_id,
+            operadora_id=operadora_id,
             repository=repository,
             storage=storage,
             dispatcher=dispatcher,
