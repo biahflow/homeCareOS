@@ -2,8 +2,8 @@
 
 Este módulo **não** escreve `documentos`. O intake é dono daquela tabela e a
 commita antes de a extração ser disparada; se a extração pudesse alterá-la, o
-dia em que ela virar fila (issue #7) ou serviço separado teria dois donos
-escrevendo o mesmo estado a partir de transações diferentes.
+dia em que ela virar fila ou serviço separado teria dois donos escrevendo o
+mesmo estado a partir de transações diferentes.
 
 O raw response do modelo não vai para o banco — só a chave de onde ele foi
 guardado, em `raw_response_ref` (ver `extracao.py` e `s3_raw_store.py`).

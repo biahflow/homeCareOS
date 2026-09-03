@@ -33,6 +33,9 @@ REQUIRED_INDEXES = {
     ("pendencias", "ix_pendencias_deadline"),
 }
 
+# Migration inicial, a única que cria (e portanto precisa dropar) os tipos enum.
+REVISION_DOS_ENUMS = "e5c3d5af888e"
+
 # Os 5 enums nativos do Postgres criados pela migration inicial.
 NATIVE_ENUM_TYPES = (
     "documento_status",
@@ -106,13 +109,18 @@ def test_all_eight_tables_exist() -> None:
 
 
 def test_downgrade_drops_every_native_enum_type() -> None:
-    """`downgrade()` precisa fazer DROP explícito dos 5 enums nativos.
+    """O `downgrade()` da migration INICIAL precisa dropar os 5 enums nativos.
+
+    A verificação é fixada em `e5c3d5af888e`, a revision que cria os tipos
+    enum, e não no head do momento: o head muda a cada migration nova, e
+    nenhuma delas tem obrigação de dropar tipo que não criou. Fixar na dona dos
+    tipos é o que mantém o teste falando do que ele quer provar.
 
     Verificação estática do código da revision — não roda o downgrade de
     verdade contra o banco compartilhado (ver docstring do módulo).
     """
     script = _script_directory()
-    revision = script.get_revision(script.get_current_head())
+    revision = script.get_revision(REVISION_DOS_ENUMS)
     assert revision is not None
 
     source = inspect.getsource(revision.module.downgrade)

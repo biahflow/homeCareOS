@@ -2,8 +2,8 @@
 
 `SyncExtractionDispatcher` extrai na própria requisição e grava `extracoes` em
 transação própria — nunca na sessão do intake, que já commitou os documentos
-antes de chegar aqui. É o ponto exato que a issue #7 substitui por um
-enfileiramento: o intake continua chamando `dispatch(...)` e não fica sabendo.
+antes de chegar aqui. É o ponto exato que uma futura fila substitui: o intake
+continua chamando `dispatch(...)` e não fica sabendo.
 
 Este módulo satisfaz `homecareos.intake.dispatcher.ExtractionDispatcher`
 estruturalmente, sem importá-lo: a extração não depende do intake, e o intake
@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from homecareos.classification.service import classificar_documento
 from homecareos.config import Settings, get_settings
 from homecareos.db.models import Documento
 from homecareos.db.session import get_sessionmaker
@@ -46,17 +47,23 @@ class SyncExtractionDispatcher:
     def _validar_contra_regras(
         self, session: Session, documento_id: uuid.UUID, campos: EvolucaoProntuario
     ) -> None:
-        """Encadeia o motor de regras (issue #5) após a extração.
+        """Encadeia o motor de regras (issue #5) e a classificação (issue #7).
 
         `registrar_extracao` já commitou sua própria transação (propriedade
         exclusiva de `extracoes`, ver `extraction/repository.py`) — não é
         possível estender essa transação sem tocar num arquivo fora do escopo
         desta trilha. Reusar a mesma sessão dentro do mesmo bloco de
         `dispatch` é a aproximação praticável do requisito "mesma transação
-        da extração".
+        da extração"; vale igual para `registrar_validacoes`, que também
+        commita sozinho antes de a classificação rodar.
 
-        `operadora_id` nulo é comum na ingestão atual — pula a validação sem
-        inventar operadora.
+        LIMITAÇÃO CONHECIDA: as duas saídas antecipadas abaixo (documento sem
+        `operadora_id` e operadora sem regra ativa) deixam o documento parado
+        em `processando`, sem classificação e sem pendência — não há como
+        classificar sem saber contra o que validar. `operadora_id` nulo é
+        comum na ingestão atual; o documento fica visível na listagem por
+        status e só sai de `processando` quando alguém associar a operadora e
+        chamar `POST /api/documentos/{id}/revalidar`.
         """
         documento = session.get(Documento, documento_id)
         if documento is None or documento.operadora_id is None:
@@ -66,6 +73,7 @@ class SyncExtractionDispatcher:
             return
         resultados = validar(campos, regras, competencia=documento.competencia)
         registrar_validacoes(session, documento_id, resultados)
+        classificar_documento(session, documento_id, resultados, usuario="sistema")
 
 
 def build_sync_dispatcher(

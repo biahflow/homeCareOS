@@ -1,4 +1,4 @@
-"""Prova o encadeamento extração → motor de regras dentro de `dispatch()`.
+"""Prova o encadeamento extração → motor de regras → classificação em `dispatch()`.
 
 Arquivo novo, fora da lista original de arquivos do handoff: não existia
 nenhum teste de regressão para `SyncExtractionDispatcher.dispatch()` no repo
@@ -26,7 +26,16 @@ import pytest
 from sqlalchemy import Connection, select
 from sqlalchemy.orm import Session
 
-from homecareos.db.models import Documento, Operadora, Regra, TipoDocumento, Validacao
+from homecareos.db.models import (
+    Documento,
+    LogConferencia,
+    Operadora,
+    Pendencia,
+    PendenciaStatus,
+    Regra,
+    TipoDocumento,
+    Validacao,
+)
 from homecareos.db.models.enums import DocumentoStatus, ResultadoValidacao
 from homecareos.db.session import get_engine
 from homecareos.extraction.dispatcher import SyncExtractionDispatcher
@@ -75,7 +84,9 @@ def _pagina() -> SimplePage:
 
 
 def _fake_resultado(**campos_overrides: object) -> ExtractionResult:
-    campos = EvolucaoProntuario(carimbo_legivel=False, **campos_overrides)  # type: ignore[arg-type]
+    campos_do_teste: dict[str, object] = {"carimbo_legivel": False}
+    campos_do_teste.update(campos_overrides)
+    campos = EvolucaoProntuario(**campos_do_teste)  # type: ignore[arg-type]
     return ExtractionResult(
         campos=campos,
         confianca=0.9,
@@ -161,3 +172,109 @@ def test_dispatch_pula_validacao_silenciosamente_sem_operadora(
         session_assert.scalars(select(Validacao).where(Validacao.documento_id == documento_id))
     )
     assert validacoes == []
+
+
+def _cenario_com_regra(connection: Connection, *, acao: str) -> tuple[uuid.UUID, uuid.UUID]:
+    """Operadora + regra ativa + documento em `processando`; devolve (documento, regra)."""
+    session_setup = Session(bind=connection, join_transaction_mode="create_savepoint")
+    operadora = Operadora(nome="Operadora Teste", codigo=f"TESTE-{uuid.uuid4()}")
+    session_setup.add(operadora)
+    session_setup.flush()
+
+    regra = Regra(
+        operadora_id=operadora.id,
+        campo="carimbo_legivel",
+        condicao=json.dumps({"tipo": "verdadeiro"}),
+        acao=acao,
+        motivo_glosa="Carimbo ilegível",
+    )
+    documento = Documento(
+        operadora_id=operadora.id,
+        tipo=TipoDocumento.EVOLUCAO,
+        arquivo_url="s3://bucket/doc.pdf",
+        competencia="2024-03",
+        status=DocumentoStatus.PROCESSANDO,
+    )
+    session_setup.add_all([regra, documento])
+    session_setup.flush()
+    session_setup.commit()
+    return documento.id, regra.id
+
+
+def test_dispatch_classifica_documento_e_abre_pendencia(db_connection: Connection) -> None:
+    """Ponta a ponta: o upload deixa de congelar o documento em `processando`."""
+    documento_id, _ = _cenario_com_regra(db_connection, acao="rejeitar")
+    dispatcher = SyncExtractionDispatcher(
+        provider=_FakeProvider(resultado=_fake_resultado()),
+        session_factory=_session_factory(db_connection),
+    )
+
+    dispatcher.dispatch(documento_id, _pagina())
+
+    session_assert = Session(bind=db_connection, join_transaction_mode="create_savepoint")
+    documento = session_assert.get(Documento, documento_id)
+    assert documento is not None
+    assert documento.status is DocumentoStatus.INCOMPLETO
+
+    (pendencia,) = list(
+        session_assert.scalars(select(Pendencia).where(Pendencia.documento_id == documento_id))
+    )
+    assert pendencia.status is PendenciaStatus.ABERTA
+    assert pendencia.tipo_problema == "campo_ausente"
+    assert "Carimbo ilegível" in pendencia.descricao
+
+    acoes = [
+        log.acao
+        for log in session_assert.scalars(
+            select(LogConferencia).where(LogConferencia.documento_id == documento_id)
+        )
+    ]
+    assert acoes == ["transicao:processando->incompleto"]
+
+
+def test_dispatch_aprova_documento_que_passa_nas_regras(db_connection: Connection) -> None:
+    documento_id, _ = _cenario_com_regra(db_connection, acao="rejeitar")
+    dispatcher = SyncExtractionDispatcher(
+        provider=_FakeProvider(resultado=_fake_resultado(carimbo_legivel=True)),
+        session_factory=_session_factory(db_connection),
+    )
+
+    dispatcher.dispatch(documento_id, _pagina())
+
+    session_assert = Session(bind=db_connection, join_transaction_mode="create_savepoint")
+    documento = session_assert.get(Documento, documento_id)
+    assert documento is not None
+    assert documento.status is DocumentoStatus.APROVADO
+    pendencias = list(
+        session_assert.scalars(select(Pendencia).where(Pendencia.documento_id == documento_id))
+    )
+    assert pendencias == []
+
+
+def test_dispatch_sem_operadora_deixa_o_documento_em_processando(
+    db_connection: Connection,
+) -> None:
+    """Limitação conhecida e documentada: sem operadora não há como classificar."""
+    session_setup = Session(bind=db_connection, join_transaction_mode="create_savepoint")
+    documento = Documento(
+        operadora_id=None,
+        tipo=TipoDocumento.EVOLUCAO,
+        arquivo_url="s3://bucket/doc.pdf",
+        competencia="2024-03",
+        status=DocumentoStatus.PROCESSANDO,
+    )
+    session_setup.add(documento)
+    session_setup.flush()
+    session_setup.commit()
+    documento_id = documento.id
+
+    dispatcher = SyncExtractionDispatcher(
+        provider=_FakeProvider(resultado=_fake_resultado()),
+        session_factory=_session_factory(db_connection),
+    )
+    dispatcher.dispatch(documento_id, _pagina())
+
+    session_assert = Session(bind=db_connection, join_transaction_mode="create_savepoint")
+    recarregado = session_assert.get(Documento, documento_id)
+    assert recarregado is not None
+    assert recarregado.status is DocumentoStatus.PROCESSANDO

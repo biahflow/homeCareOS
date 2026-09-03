@@ -20,6 +20,7 @@ from homecareos.db.models.enums import ResultadoValidacao
 from homecareos.db.models.regra import Regra
 from homecareos.extraction.schema import EvolucaoProntuario
 from homecareos.rules.schema import (
+    AcaoRegra,
     Condicao,
     CondicaoDentroDaCompetencia,
     CondicaoE,
@@ -59,6 +60,7 @@ def _avaliar_regra(
             regra_id=regra.id,
             resultado=ResultadoValidacao.REPROVADO,
             detalhe=f"Condição da regra malformada: {exc}",
+            acao=_acao_da_regra(regra),
             motivo_glosa=regra.motivo_glosa,
         )
 
@@ -69,6 +71,7 @@ def _avaliar_regra(
             regra_id=regra.id,
             resultado=ResultadoValidacao.APROVADO,
             detalhe="Regra satisfeita.",
+            acao=_acao_da_regra(regra),
             motivo_glosa=None,
         )
     return ResultadoAvaliacao(
@@ -76,8 +79,24 @@ def _avaliar_regra(
         regra_id=regra.id,
         resultado=ResultadoValidacao.REPROVADO,
         detalhe=detalhe_falha,
+        acao=_acao_da_regra(regra),
         motivo_glosa=regra.motivo_glosa,
     )
+
+
+def _acao_da_regra(regra: Regra) -> AcaoRegra:
+    """`regras.acao` é `String` livre no banco — valor desconhecido vira `SINALIZAR`.
+
+    Defensivo pelo mesmo motivo que a condição malformada é tratada acima: uma
+    `acao` inválida gravada à mão não pode derrubar um fechamento de
+    competência. `SINALIZAR` é o desconhecido seguro — manda um humano olhar —
+    enquanto `APROVAR` silenciaria a violação e `REJEITAR` bloquearia o
+    documento por um erro de digitação de quem cadastrou a regra.
+    """
+    try:
+        return AcaoRegra(regra.acao)
+    except ValueError:
+        return AcaoRegra.SINALIZAR
 
 
 def _avaliar_condicao(
