@@ -8,6 +8,12 @@ A revalidação é o único endpoint daqui que escreve: ela reaplica as regras
 ativas sobre a última extração já existente e reclassifica o documento. Toda a
 lógica vive em `homecareos.classification.service`; este módulo só traduz os
 erros de domínio em status HTTP.
+
+Desde a issue #30 a revalidação registra **quem** a pediu: `usuario` deixou de
+ser o literal `"api"` e passa a vir do `Principal` da requisição. Com sessão de
+usuário, `log_conferencia` guarda o e-mail e o `usuario_id` da pessoa; com
+`X-API-Key`, continua `"api"` com `usuario_id` nulo — não há pessoa por trás da
+chave, e forjar uma faria a auditoria mentir.
 """
 
 from __future__ import annotations
@@ -27,6 +33,8 @@ from homecareos.api.pagination import (
     envelope_paginado,
     paginacao_params,
 )
+from homecareos.auth.dependencies import exigir_papel, principal_atual
+from homecareos.auth.schema import Papel, Principal
 from homecareos.classification.errors import (
     DocumentoNaoEncontradoError,
     RevalidacaoIndisponivelError,
@@ -190,13 +198,23 @@ class RevalidacaoResponse(BaseModel):
         "Reaplica as regras ativas sobre a última extração já registrada e "
         "reclassifica o documento. Não chama o provider de extração de novo."
     ),
+    # Autorização no ENDPOINT, e não no router — exceção consciente à regra
+    # "auth por router" de `api/auth.py`. Este router mistura capacidades de
+    # papéis diferentes: ler documento é dos três papéis, revalidar é ação de
+    # conferência (conferente e coordenador). Aplicar a restrição mais estreita
+    # no router fecharia a leitura para o gestor; aplicar a mais larga deixaria
+    # a escrita aberta. A dependency do router continua valendo por baixo desta.
+    dependencies=[Depends(exigir_papel(Papel.CONFERENTE, Papel.COORDENADOR))],
 )
 def revalidar_documento(
     documento_id: uuid.UUID,
     session: Annotated[Session, Depends(get_session)],
+    principal: Annotated[Principal, Depends(principal_atual)],
 ) -> RevalidacaoResponse:
     try:
-        status_final = revalidar(session, documento_id, usuario="api")
+        status_final = revalidar(
+            session, documento_id, usuario=principal.rotulo, usuario_id=principal.usuario_id
+        )
     except DocumentoNaoEncontradoError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except (RevalidacaoIndisponivelError, TransicaoInvalidaError) as exc:

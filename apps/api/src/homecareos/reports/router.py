@@ -5,10 +5,17 @@ operacional (`/conferencia` e `/conferencia.csv`), que a conferente usa todo
 dia, e as métricas agregadas (`/metricas`), que sustentam a comparação
 antes/depois. O `/baseline` é o cadastro que alimenta a segunda.
 
-Este router nasce **sem** autenticação própria: a proteção é aplicada em
-`main.py` no `include_router(..., dependencies=[Depends(require_api_key)])`,
-como para todos os outros — ver a docstring de `api/auth.py` para por que a
-regra é por router e nunca endpoint a endpoint.
+A proteção base é aplicada em `main.py`, no `include_router(...)`, como para
+todos os outros — ver a docstring de `api/auth.py` para por que a regra é por
+router e nunca endpoint a endpoint.
+
+Este router é **exceção consciente** a essa regra desde a issue #30, e a razão
+é o público misto do primeiro parágrafo: o relatório operacional é dos três
+papéis, as métricas são de coordenador e gestor, e o baseline é escrito só pelo
+gestor (é dado de gestão, não de conferência — ADR 0001). Uma regra única no
+router ou fecharia o relatório para quem o usa todo dia, ou abriria o baseline
+para quem não o escreve. Por isso cada endpoint restrito declara o seu papel, e
+a regra do router (os três) continua valendo por baixo.
 """
 
 from __future__ import annotations
@@ -31,6 +38,8 @@ from homecareos.api.pagination import (
     envelope_paginado,
     paginacao_params,
 )
+from homecareos.auth.dependencies import exigir_papel
+from homecareos.auth.schema import Papel
 from homecareos.db.models import BaselineCompetencia, DocumentoStatus, Operadora
 from homecareos.db.session import get_session, get_sessionmaker
 from homecareos.reports import csv_export
@@ -152,6 +161,9 @@ def relatorio_conferencia_csv(
 @router.get(
     "/metricas",
     response_model=MetricasResponse,
+    # Métrica agregada é leitura de gestão, não de conferência (ver a docstring
+    # do módulo para a exceção à regra "auth por router").
+    dependencies=[Depends(exigir_papel(Papel.COORDENADOR, Papel.GESTOR))],
     summary="Métricas agregadas por competência, operadora e dia",
     description=(
         "O que o sistema mediu (pendência detectada antes do envio) e o que foi "
@@ -176,6 +188,10 @@ def metricas(
 @router.put(
     "/baseline",
     response_model=BaselineOut,
+    # Só o gestor escreve baseline: é o número de glosa informado pela
+    # operadora, a régua contra a qual o próprio sistema é medido. Quem opera a
+    # conferência não deve poder mexer na régua que mede a conferência.
+    dependencies=[Depends(exigir_papel(Papel.GESTOR))],
     summary="Registra ou corrige o baseline de glosa de uma competência",
     description=(
         "Upsert idempotente pela chave natural `(competencia, operadora_id)`. "
@@ -258,6 +274,8 @@ def upsert_baseline(
     "/baseline",
     response_model=list[BaselineOut],
     summary="Lista os baselines de glosa registrados",
+    # Leitura de gestão, como `/metricas`.
+    dependencies=[Depends(exigir_papel(Papel.COORDENADOR, Papel.GESTOR))],
 )
 def listar_baselines(session: Annotated[Session, Depends(get_session)]) -> list[BaselineOut]:
     """Sem paginação: é um cadastro pequeno (uma linha por competência/operadora).

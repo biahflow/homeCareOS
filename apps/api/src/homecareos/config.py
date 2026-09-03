@@ -2,6 +2,12 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Nome padrão do cookie de sessão de usuário. Vive aqui, e não em `auth/`,
+# porque é o default de uma configuração e `config` é a camada mais baixa: a
+# declaração do esquema de segurança em `auth/dependencies.py` importa esta
+# constante, nunca o contrário.
+COOKIE_SESSAO_PADRAO = "homecareos_sessao"
+
 
 class Settings(BaseSettings):
     """Configuração da aplicação, lida de variáveis de ambiente / `.env`."""
@@ -41,9 +47,20 @@ class Settings(BaseSettings):
     api_keys: str = ""
 
     # Responsável atribuído a toda pendência que a classificação abre. Não é um
-    # id de usuário porque não existe modelo de usuário ainda: a atribuição real
-    # a uma pessoa acontece por reatribuição via `PATCH /api/pendencias/{id}`.
+    # id de usuário porque a classificação é automática e não tem pessoa: a
+    # atribuição a alguém de verdade acontece por reatribuição via
+    # `PATCH /api/pendencias/{id}`, que desde a issue #30 aceita
+    # `responsavel_id` e vincula a pendência a um usuário cadastrado.
     pendencia_responsavel_padrao: str = "equipe-conferencia"
+
+    # Duração da sessão de usuário. 12h cobre um turno inteiro sem obrigar
+    # relogin no meio do fechamento de competência.
+    sessao_duracao_horas: int = 12
+    # Nome do cookie que carrega o token opaco de sessão. O padrão é também o
+    # nome declarado no esquema de segurança do OpenAPI (ver
+    # `auth/dependencies.py`): trocar esta configuração troca o cookie de
+    # verdade e desatualiza a declaração, então é operação de exceção.
+    sessao_cookie_nome: str = COOKIE_SESSAO_PADRAO
 
     # Gateway de WhatsApp (uazapi). Base URL vazia OU token vazio desabilita
     # todo o envio de alerta — o sistema segue funcionando, só não notifica.

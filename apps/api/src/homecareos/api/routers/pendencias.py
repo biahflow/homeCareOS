@@ -5,6 +5,12 @@ nunca este router: aqui a equipe só as transiciona. O `PATCH` é o ponto em que
 o ciclo de correção avança, e por isso ele propaga a transição da pendência
 para o documento — inclusive disparando a revalidação quando a última pendência
 do documento é resolvida.
+
+Desde a issue #30 é também o ponto em que a auditoria ganha nome: toda linha de
+`log_conferencia` que sai daqui leva o rótulo e o `usuario_id` do `Principal`
+da requisição, em vez do literal `"api"` de antes. É o critério de aceite nº 1
+da issue — duas pessoas transicionando pendências produzem duas linhas com
+`usuario` distinto.
 """
 
 from __future__ import annotations
@@ -24,13 +30,15 @@ from homecareos.api.pagination import (
     envelope_paginado,
     paginacao_params,
 )
+from homecareos.auth.dependencies import exigir_papel, principal_atual
+from homecareos.auth.schema import Papel, Principal
 from homecareos.classification.errors import RevalidacaoIndisponivelError
 from homecareos.classification.service import (
     registrar_log,
     revalidar_documento,
     transicionar,
 )
-from homecareos.db.models import Documento, DocumentoStatus, Pendencia, PendenciaStatus
+from homecareos.db.models import Documento, DocumentoStatus, Pendencia, PendenciaStatus, Usuario
 from homecareos.db.session import get_session
 
 router = APIRouter(prefix="/api/pendencias", tags=["pendencias"])
@@ -57,6 +65,9 @@ class PendenciaItem(BaseModel):
     campo: str | None
     descricao: str
     responsavel: str
+    # Nulo enquanto a pendência não foi atribuída a uma pessoa cadastrada — é o
+    # caso de toda pendência que a classificação automática abre.
+    responsavel_id: uuid.UUID | None
     status: PendenciaStatus
     deadline: datetime
     created_at: datetime
@@ -71,6 +82,12 @@ class AtualizarPendenciaRequest(BaseModel):
     # sem tornar obrigatório repetir o responsável a cada transição. `status`
     # continua obrigatório — o PATCH é, antes de tudo, uma transição.
     responsavel: str | None = None
+    # Atribuição a uma pessoa cadastrada (issue #30). Quando informado, ele
+    # manda: `responsavel` passa a ser o nome do usuário, gravado como
+    # instantâneo legível. O texto livre continua aceito e continua funcionando
+    # como antes — a operação atribui a fornecedor, a setor e a gente que ainda
+    # não tem cadastro.
+    responsavel_id: uuid.UUID | None = None
 
 
 class ResumoPendencias(BaseModel):
@@ -171,11 +188,18 @@ def listar_pendencias(
     response_model=PendenciaItem,
     summary="Transiciona o status de uma pendência",
     description="Só aceita a transição para frente: aberta -> em_correcao -> resolvida.",
+    # Autorização no ENDPOINT, e não no router — exceção consciente à regra
+    # "auth por router" de `api/auth.py`. Ler pendência é dos três papéis;
+    # transicionar é ação de conferência, que o gestor não executa (ele lê a
+    # operação inteira, ver ADR 0001). A dependency do router continua valendo
+    # por baixo desta.
+    dependencies=[Depends(exigir_papel(Papel.CONFERENTE, Papel.COORDENADOR))],
 )
 def atualizar_pendencia(
     pendencia_id: uuid.UUID,
     corpo: AtualizarPendenciaRequest,
     session: Annotated[Session, Depends(get_session)],
+    principal: Annotated[Principal, Depends(principal_atual)],
 ) -> PendenciaItem:
     pendencia = session.get(Pendencia, pendencia_id)
     if pendencia is None:
@@ -193,20 +217,52 @@ def atualizar_pendencia(
             ),
         )
 
+    # A validação do responsável vem ANTES de qualquer escrita no objeto: um
+    # `responsavel_id` errado não pode deixar a pendência transicionada na
+    # sessão, mesmo que o `close()` acabe descartando — o código não deve
+    # depender do descarte para estar correto.
+    responsavel = (
+        _usuario_ativo(session, corpo.responsavel_id) if corpo.responsavel_id is not None else None
+    )
+
     pendencia.status = corpo.status
     if corpo.responsavel is not None:
         pendencia.responsavel = corpo.responsavel
+    if responsavel is not None:
+        pendencia.responsavel_id = responsavel.id
+        # Instantâneo legível: o histórico continua legível mesmo depois de a
+        # pessoa mudar de nome ou sair da operação.
+        pendencia.responsavel = responsavel.nome
     if corpo.status == PendenciaStatus.RESOLVIDA:
         pendencia.resolved_at = datetime.now(UTC)
     session.commit()
 
-    _propagar_para_o_documento(session, pendencia)
+    _propagar_para_o_documento(session, pendencia, principal)
     session.refresh(pendencia)
 
     return PendenciaItem.model_validate(pendencia)
 
 
-def _propagar_para_o_documento(session: Session, pendencia: Pendencia) -> None:
+def _usuario_ativo(session: Session, responsavel_id: uuid.UUID) -> Usuario:
+    """O usuário a quem a pendência será atribuída, ou 422 com a razão.
+
+    422 e não 404: o recurso do PATCH é a pendência, e ela existe — o que está
+    errado é um campo do corpo. Usuário inativo é recusado junto com o
+    inexistente porque atribuir cobrança a quem saiu da operação é o mesmo que
+    não atribuir a ninguém, só que sem ninguém perceber.
+    """
+    usuario = session.get(Usuario, responsavel_id)
+    if usuario is None or not usuario.ativo:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="responsavel_id não corresponde a um usuário ativo",
+        )
+    return usuario
+
+
+def _propagar_para_o_documento(
+    session: Session, pendencia: Pendencia, principal: Principal
+) -> None:
     """Reflete no documento a transição que acabou de acontecer na pendência.
 
     A pendência já foi commitada antes desta chamada, e de propósito: a
@@ -225,7 +281,8 @@ def _propagar_para_o_documento(session: Session, pendencia: Pendencia) -> None:
                 session,
                 documento,
                 DocumentoStatus.EM_CORRECAO,
-                usuario="api",
+                usuario=principal.rotulo,
+                usuario_id=principal.usuario_id,
                 detalhe=f"pendência {pendencia.id} entrou em correção",
             )
             session.commit()
@@ -253,13 +310,16 @@ def _propagar_para_o_documento(session: Session, pendencia: Pendencia) -> None:
         session,
         documento,
         DocumentoStatus.RESOLVIDO,
-        usuario="api",
+        usuario=principal.rotulo,
+        usuario_id=principal.usuario_id,
         detalhe="todas as pendências do documento foram resolvidas",
     )
     session.commit()
 
     try:
-        revalidar_documento(session, documento.id, usuario="api")
+        revalidar_documento(
+            session, documento.id, usuario=principal.rotulo, usuario_id=principal.usuario_id
+        )
     except RevalidacaoIndisponivelError as exc:
         # Nunca 500: a transição da pendência é do usuário e já aconteceu. Se a
         # revalidação automática não tem insumo (documento sem extração, sem
@@ -269,7 +329,8 @@ def _propagar_para_o_documento(session: Session, pendencia: Pendencia) -> None:
             session,
             documento_id=documento.id,
             acao="revalidacao:indisponivel",
-            usuario="api",
+            usuario=principal.rotulo,
+            usuario_id=principal.usuario_id,
             detalhe=str(exc),
         )
         session.commit()

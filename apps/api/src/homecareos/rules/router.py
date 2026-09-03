@@ -1,8 +1,11 @@
 """CRUD de `regras` — issue #5.
 
-Sem autenticação: a trilha F está construindo essa camada; a integração aplica
-a dependência a este router depois. Este router não é registrado em `main.py`
-por esta trilha — mesmo motivo, para as duas trilhas não colidirem no arquivo.
+Sem autenticação própria: a proteção é aplicada em `main.py`, no
+`include_router(...)`, como para todos os outros — ver a docstring de
+`api/auth.py` para por que a regra é por router e nunca endpoint a endpoint.
+Desde a issue #30 a regra deste router é `exigir_papel(coordenador)`: a regra de
+glosa é o que decide se um documento reprova, e editá-la é decisão de quem
+coordena a conferência. A chave de API continua passando, como em todo o resto.
 """
 
 from __future__ import annotations

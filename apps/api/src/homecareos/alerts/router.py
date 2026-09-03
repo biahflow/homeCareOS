@@ -1,9 +1,11 @@
 """`POST /api/alertas/varredura` e `GET /api/alertas` — issue #9.
 
 Este router nasce **sem** autenticação própria: a proteção é aplicada em
-`main.py` no `include_router(..., dependencies=[Depends(require_api_key)])`,
-como para todos os outros — ver a docstring de `api/auth.py` para por que a
-regra é por router e nunca endpoint a endpoint.
+`main.py` no `include_router(...)`, como para todos os outros — ver a docstring
+de `api/auth.py` para por que a regra é por router e nunca endpoint a endpoint.
+Desde a issue #30 a regra deste router é `exigir_papel(coordenador, gestor)`:
+disparar varredura e ler quem foi notificado é acompanhamento da operação, não
+execução dela. A chave de API continua passando, como em todo o resto.
 
 O provider vem de uma dependency (`obter_provider`) em vez de ser construído
 dentro do handler: é o que permite ao teste de integração injetar um dublê em
@@ -48,8 +50,9 @@ class AlertaItem(BaseModel):
     """Uma linha do log de alertas.
 
     Expõe `mensagem` — que carrega nome de paciente — pela mesma razão que a
-    tabela a guarda: auditar um envio é saber o que foi dito. O endpoint está
-    sob `X-API-Key` como todo o resto de `/api/*`.
+    tabela a guarda: auditar um envio é saber o que foi dito. O endpoint exige
+    credencial como todo o resto de `/api/*`, e papel `coordenador` ou `gestor`
+    quando quem chama é uma pessoa.
     """
 
     id: uuid.UUID
