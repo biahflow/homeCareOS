@@ -1,5 +1,6 @@
 """Registra todos os models SQLAlchemy em `Base.metadata` (lido pelo Alembic autogenerate)."""
 
+from homecareos.db.models.baseline import BaselineCompetencia
 from homecareos.db.models.documento import Documento
 from homecareos.db.models.enums import (
     DocumentoStatus,
@@ -17,6 +18,7 @@ from homecareos.db.models.regra import Regra
 from homecareos.db.models.validacao import Validacao
 
 __all__ = [
+    "BaselineCompetencia",
     "Documento",
     "DocumentoStatus",
     "Extracao",

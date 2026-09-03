@@ -16,7 +16,16 @@ class Pendencia(Base):
     """Pendência aberta sobre um `Documento` durante a conferência."""
 
     __tablename__ = "pendencias"
-    __table_args__ = (Index("ix_pendencias_deadline", "deadline"),)
+    __table_args__ = (
+        Index("ix_pendencias_deadline", "deadline"),
+        # A FK para `documentos` não cria índice sozinha no Postgres, e esta é a
+        # coluna mais consultada da tabela: o relatório de conferência busca as
+        # pendências de uma página inteira (`documento_id IN (...)`), as
+        # métricas fazem `EXISTS` por documento e os detectores de alerta
+        # juntam `pendencias` a `documentos`. Sem o índice, todas elas caem em
+        # varredura sequencial num volume de fechamento de competência.
+        Index("ix_pendencias_documento_id", "documento_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     documento_id: Mapped[uuid.UUID] = mapped_column(

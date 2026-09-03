@@ -28,3 +28,43 @@ O seed (`rules/seed_regras.py`) é idempotente via
 uma regra que a operação desativou: rodar o seed de novo em todo deploy não
 desfaz ajuste nenhum feito à mão no banco. Mudar o conteúdo de uma regra já
 cadastrada é migration de dados explícita, não efeito colateral de seed.
+
+## Relatórios e métricas
+
+Dois produtos sobre o mesmo dado, com públicos diferentes (issue #8), sob
+`/api/relatorios` — protegido por `X-API-Key` como todo o resto de `/api/*`:
+
+- `GET /conferencia` e `GET /conferencia.csv` — o **relatório operacional**: uma
+  linha por documento, com o problema encontrado e a ação necessária já
+  resolvidos no backend. Filtra por competência, status, operadora, paciente,
+  janela de recebimento e `apenas_pendentes`. Ordena pelo que precisa de ação
+  humana primeiro (incompleto, problema, em correção), depois pelo prazo mais
+  próximo — não pelo ciclo de vida do documento.
+- `GET /metricas` — as **métricas agregadas** por competência, operadora e dia.
+- `GET`/`PUT /baseline` — o cadastro de glosa informada à mão, que é o que
+  torna a comparação antes/depois possível.
+
+### A honestidade da comparação antes/depois
+
+O sistema mede **pendência detectada antes do envio**; o baseline registra
+**glosa**, o que a operadora recusou depois do envio. São medidas diferentes e
+**não são divididas uma pela outra**: a resposta de `/metricas` expõe os dois
+blocos lado a lado e nomeados (`sistema` e `glosa_informada`), nunca fundidos
+num único número de "ROI". A comparação que o backend calcula
+(`comparacao_glosa`) é glosa contra glosa — a competência mais antiga com
+baseline contra a mais recente com baseline, mesma medida nas duas pontas — e é
+`None` enquanto não houver duas.
+
+`documentos_com_pendencia` (documento com ao menos uma pendência, em qualquer
+status) é a medida estável de "quantos exigiram intervenção" e é ela que serve
+para acompanhar mês a mês; `por_status` é foto do status **atual** e por isso
+melhora justamente quando a correção funciona. As definições completas estão na
+docstring de `src/homecareos/reports/metricas.py`.
+
+### CSV, e não `.xlsx`
+
+`GET /conferencia.csv` sai com delimitador `;` e BOM UTF-8: é o que faz o
+arquivo abrir com colunas separadas e acentuação correta no Excel em português.
+Um `.xlsx` de verdade exigiria dependência nova (`openpyxl`) sem ganho neste
+momento — **desvio consciente** da issue, que pede "CSV/Excel", registrado
+também na docstring de `src/homecareos/reports/csv_export.py`.
