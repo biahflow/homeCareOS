@@ -200,3 +200,17 @@ def test_chave_nao_ascii_devolve_401_e_nao_erro_interno(chave_hostil: str) -> No
 
     assert erro.value.status_code == 401
     assert erro.value.detail == MENSAGEM_CREDENCIAL_INVALIDA
+
+
+def test_regras_tambem_exige_chave() -> None:
+    """O router de regras é escrito por outra trilha, sem auth própria.
+
+    Se a proteção dependesse de cada trilha lembrar de aplicá-la, este é
+    exatamente o endpoint que nasceria aberto — e ele expõe as regras de
+    glosa de cada operadora.
+    """
+    from homecareos.main import create_app
+
+    cliente = TestClient(create_app(Settings(api_keys=CHAVE_VALIDA)))
+
+    assert cliente.get("/api/regras").status_code == 401

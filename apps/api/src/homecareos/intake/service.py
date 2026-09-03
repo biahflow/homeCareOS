@@ -81,6 +81,8 @@ def receber_upload(
     repository: DocumentoRepository,
     storage: DocumentStorage,
     dispatcher: ExtractionDispatcher,
+    paciente_id: uuid.UUID | None = None,
+    operadora_id: uuid.UUID | None = None,
     tipo: TipoDocumento = TipoDocumento.EVOLUCAO,
 ) -> ResultadoUpload:
     """Ingere um upload: valida, fatia em páginas, persiste e dispara a extração.
@@ -110,6 +112,8 @@ def receber_upload(
             idempotency_key=idempotency_key,
             tipo=tipo,
             storage=storage,
+            paciente_id=paciente_id,
+            operadora_id=operadora_id,
         )
         for pagina in paginas
     ]
@@ -131,6 +135,8 @@ def _montar_documento(
     idempotency_key: str | None,
     tipo: TipoDocumento,
     storage: DocumentStorage,
+    paciente_id: uuid.UUID | None,
+    operadora_id: uuid.UUID | None,
 ) -> Documento:
     """Grava a página no storage e monta o `Documento` que aponta para ela.
 
@@ -144,6 +150,8 @@ def _montar_documento(
     storage.put(chave, pagina.conteudo, pagina.content_type)
     return Documento(
         id=documento_id,
+        paciente_id=paciente_id,
+        operadora_id=operadora_id,
         tipo=tipo,
         arquivo_url=chave,
         competencia=competencia,

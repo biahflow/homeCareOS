@@ -76,10 +76,13 @@ class FakeDocumentoRepository:
 
     documentos: dict[uuid.UUID, DocumentoRegistrado] = field(default_factory=dict)
     por_chave: dict[str, DocumentoRegistrado] = field(default_factory=dict)
+    operadora_por_paciente: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
+    criados: list[Documento] = field(default_factory=list)
     logs: list[dict[str, str]] = field(default_factory=list)
     rollbacks: int = 0
 
     def criar_documentos(self, documentos: list[Documento]) -> list[DocumentoRegistrado]:
+        self.criados.extend(documentos)
         chaves = [d.idempotency_key for d in documentos if d.idempotency_key is not None]
         if any(chave in self.por_chave for chave in chaves):
             # Mesma exceção que o índice único levanta: a colisão é decidida
@@ -113,6 +116,9 @@ class FakeDocumentoRepository:
     def buscar_por_idempotency_keys(self, chaves: list[str]) -> list[DocumentoRegistrado]:
         encontrados = [self.por_chave[chave] for chave in chaves if chave in self.por_chave]
         return sorted(encontrados, key=lambda documento: documento.pagina)
+
+    def operadora_do_paciente(self, paciente_id: uuid.UUID) -> uuid.UUID | None:
+        return self.operadora_por_paciente.get(paciente_id)
 
     def registrar_log(
         self, *, documento_id: uuid.UUID, acao: str, usuario: str, detalhe: str

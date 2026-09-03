@@ -48,6 +48,8 @@ def _receber(
     dispatcher: FakeDispatcher | FailingDispatcher,
     idempotency_key: str | None = None,
     filename: str = "evolucao.pdf",
+    paciente_id: uuid.UUID | None = None,
+    operadora_id: uuid.UUID | None = None,
 ) -> ResultadoUpload:
     return receber_upload(
         conteudo=conteudo,
@@ -57,6 +59,8 @@ def _receber(
         repository=repository,
         storage=storage,
         dispatcher=dispatcher,
+        paciente_id=paciente_id,
+        operadora_id=operadora_id,
     )
 
 
@@ -450,3 +454,27 @@ def test_reenvio_concorrente_ainda_e_resolvido_pelo_indice_unico() -> None:
     assert [d.id for d in segundo.documentos] == [d.id for d in primeiro.documentos]
     assert repository.rollbacks == 1
     assert len(repository.documentos) == chamadas_antes
+
+
+def test_upload_associa_paciente_e_operadora() -> None:
+    """Sem operadora no documento o motor de regras não roda.
+
+    A operadora é quem determina quais regras de glosa se aplicam; documento
+    sem ela atravessa a conferência sem ser conferido.
+    """
+    paciente = uuid.uuid4()
+    operadora = uuid.uuid4()
+    repository = FakeDocumentoRepository()
+
+    resultado = _receber(
+        conteudo=make_pdf(2),
+        repository=repository,
+        storage=FakeStorage(),
+        dispatcher=FakeDispatcher(),
+        paciente_id=paciente,
+        operadora_id=operadora,
+    )
+
+    assert len(resultado.documentos) == 2
+    assert all(d.paciente_id == paciente for d in repository.criados)
+    assert all(d.operadora_id == operadora for d in repository.criados)
