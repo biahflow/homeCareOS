@@ -13,6 +13,7 @@ import logging
 
 from fastapi import Depends, FastAPI
 
+from homecareos.alerts.router import router as alertas_router
 from homecareos.api.auth import require_api_key
 from homecareos.api.errors import register_exception_handlers
 from homecareos.api.routers.documentos import router as documentos_router
@@ -74,6 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # de regras); a proteção é aplicada aqui, como para todos os outros.
     app.include_router(rules_router, dependencies=[Depends(require_api_key)])
     app.include_router(relatorios_router, dependencies=[Depends(require_api_key)])
+    app.include_router(alertas_router, dependencies=[Depends(require_api_key)])
 
     @app.get("/health", summary="Sonda de infraestrutura", tags=["health"])
     def health() -> dict[str, str]:

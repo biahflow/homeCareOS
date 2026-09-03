@@ -19,13 +19,16 @@ dependencies = [
   "boto3>=1.40,<2",
   # Extração assistida por IA das evoluções (trilha de extração).
   "anthropic>=0.40,<1",
+  # Cliente HTTP do gateway de WhatsApp que envia os alertas (trilha de
+  # alertas). Sai do grupo `dev` — onde entrara só para o TestClient do
+  # FastAPI — porque agora é dependência de runtime da aplicação.
+  "httpx>=0.28,<1",
 ]
 
 [dependency-groups]
 dev = [
   "pytest>=8.4,<9",
   "pytest-cov>=6.2,<7",
-  "httpx>=0.28,<1",
   "ruff>=0.12,<1",
   "mypy>=1.17,<2",
   "types-boto3>=1.40,<2",
