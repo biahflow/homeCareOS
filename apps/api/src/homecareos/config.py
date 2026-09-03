@@ -62,6 +62,32 @@ class Settings(BaseSettings):
     # verdade e desatualiza a declaração, então é operação de exceção.
     sessao_cookie_nome: str = COOKIE_SESSAO_PADRAO
 
+    # Freio para força bruta contra POST /api/auth/login (issue #33). Ver
+    # `auth/protecao.py` para o desenho completo.
+    # Janela de observação das tentativas de login.
+    login_janela_minutos: int = 15
+    # Falhas na janela que travam a origem (IP). A trava só dispara quando
+    # NÃO houve nenhum login bem-sucedido daquele IP na janela: IP
+    # compartilhado é o caso comum (atrás de proxy, a empresa inteira chega
+    # com um só), e contar falhas cruas trancaria toda a equipe por erros de
+    # digitação somados. Ver `auth/protecao.avaliar_bloqueio`.
+    login_falhas_para_travar_ip: int = 10
+    # Falhas na janela que travam a conta. MUITO mais alto que o de IP, e por
+    # quê: travar conta permite que qualquer um que saiba o e-mail de alguém
+    # mantenha a pessoa fora do sistema de propósito. É o último recurso, não
+    # o primeiro.
+    login_falhas_para_travar_conta: int = 20
+    login_trava_minutos: int = 15
+    # Atraso progressivo. O TETO não é ajuste fino: sem ele, requisições
+    # baratas esgotam o threadpool do FastAPI e o próprio atraso vira o
+    # ataque.
+    login_atraso_base_segundos: float = 0.25
+    login_atraso_maximo_segundos: float = 2.0
+    # `X-Forwarded-For` só é confiável quando existe um proxy que o reescreve.
+    # Default `False`: confiar por padrão deixaria qualquer um forjar a
+    # origem e escapar da trava de IP.
+    confiar_em_x_forwarded_for: bool = False
+
     # Gateway de WhatsApp (uazapi). Base URL vazia OU token vazio desabilita
     # todo o envio de alerta — o sistema segue funcionando, só não notifica.
     uazapi_base_url: str = ""

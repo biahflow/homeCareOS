@@ -17,6 +17,7 @@ from homecareos.db.models.paciente import Paciente
 from homecareos.db.models.pendencia import Pendencia
 from homecareos.db.models.regra import Regra
 from homecareos.db.models.sessao import Sessao
+from homecareos.db.models.tentativa_login import TentativaLogin
 from homecareos.db.models.usuario import Usuario
 from homecareos.db.models.validacao import Validacao
 
@@ -35,6 +36,7 @@ __all__ = [
     "Regra",
     "ResultadoValidacao",
     "Sessao",
+    "TentativaLogin",
     "TipoDocumento",
     "Usuario",
     "Validacao",
