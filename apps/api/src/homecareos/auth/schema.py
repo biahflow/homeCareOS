@@ -69,6 +69,31 @@ class LoginRequest(BaseModel):
     senha: str = Field(min_length=1)
 
 
+class EsqueciSenhaRequest(BaseModel):
+    """Corpo de `POST /api/auth/senha/esqueci`.
+
+    `str` e não `EmailStr` pelo mesmo motivo de `LoginRequest`, e aqui ele é
+    ainda mais forte: recusar por formato criaria uma resposta distinguível
+    ("e-mail inválido") no endpoint cujo contrato inteiro é responder **igual**
+    para qualquer entrada.
+    """
+
+    email: str = Field(min_length=1)
+
+
+class RedefinirSenhaRequest(BaseModel):
+    """Corpo de `POST /api/auth/senha/redefinir`.
+
+    `nova_senha` **não** declara `min_length` de propósito: o piso de tamanho é
+    de `senhas.validar_forca`, configurável por `SENHA_MINIMA_CARACTERES`. Um
+    `min_length` aqui seria a mesma regra em dois lugares, respondendo com duas
+    mensagens diferentes conforme o valor caísse de um lado ou do outro.
+    """
+
+    token: str = Field(min_length=1)
+    nova_senha: str
+
+
 class UsuarioOut(BaseModel):
     """Usuário como a API o devolve. Não existe campo de senha aqui, e nunca vai existir."""
 

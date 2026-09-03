@@ -135,6 +135,31 @@ def test_api_keys_preenchido_em_production_sobe_normalmente() -> None:
 
 # --- OpenAPI: esquema de segurança declarado (AC7) ---------------------------
 
+# Rotas públicas por desenho, cada uma com a razão de ser. Toda rota fora desta
+# lista precisa declarar segurança no schema — é isso que impede um endpoint
+# novo de nascer aberto por esquecimento.
+#
+# A lista existe desde a issue #34. Antes dela, o teste pulava só `/health` e
+# afirmava que todo o resto exigia `X-API-Key`; a afirmação já era falsa:
+# `/login` e `/logout` nunca exigiram credencial e passavam por acidente,
+# porque leem o cookie de sessão por uma dependency opcional
+# (`auth/dependencies.token_de_sessao`) e isso sozinho põe um esquema no
+# schema. Nomear as públicas troca esse acidente por uma decisão explícita:
+# acrescentar rota a esta lista é ato deliberado, e é onde a revisão olha.
+ROTAS_PUBLICAS = {
+    # Sonda de infraestrutura.
+    "/health",
+    # Não dá para exigir sessão para criar sessão.
+    "/api/auth/login",
+    # Um 401 em cookie expirado prenderia o navegador com um cookie que ele não
+    # consegue nem descartar.
+    "/api/auth/logout",
+    # Quem esqueceu a senha não tem credencial nenhuma para apresentar.
+    "/api/auth/senha/esqueci",
+    # A credencial aqui é o token que chegou por e-mail, não a sessão.
+    "/api/auth/senha/redefinir",
+}
+
 
 def test_openapi_declara_o_esquema_de_seguranca_x_api_key() -> None:
     app = create_app(Settings(environment="local", api_keys="chave-qualquer"))
@@ -143,12 +168,26 @@ def test_openapi_declara_o_esquema_de_seguranca_x_api_key() -> None:
 
     esquemas = schema["components"]["securitySchemes"]
     assert esquemas["APIKeyHeader"] == {"type": "apiKey", "in": "header", "name": "X-API-Key"}
-    # `/health` é a única rota sem exigência de segurança.
     for path, operacoes in schema["paths"].items():
         for metodo, operacao in operacoes.items():
-            if path == "/health":
+            if path in ROTAS_PUBLICAS:
                 continue
-            assert operacao.get("security"), f"{metodo.upper()} {path} não exige X-API-Key"
+            assert operacao.get("security"), f"{metodo.upper()} {path} não exige credencial"
+
+
+def test_toda_rota_publica_declarada_existe_no_schema() -> None:
+    """A lista de rotas públicas não pode envelhecer em silêncio.
+
+    Sem esta verificação, uma rota renomeada ou removida deixaria uma entrada
+    órfã em `ROTAS_PUBLICAS` — e a entrada órfã continuaria isentando o nome
+    antigo, que é exatamente o buraco por onde uma rota nova entraria sem
+    ninguém notar.
+    """
+    app = create_app(Settings(environment="local", api_keys="chave-qualquer"))
+
+    caminhos = set(app.openapi()["paths"])
+
+    assert caminhos >= ROTAS_PUBLICAS, f"rotas públicas inexistentes: {ROTAS_PUBLICAS - caminhos}"
 
 
 def test_health_nao_exige_seguranca_no_openapi() -> None:

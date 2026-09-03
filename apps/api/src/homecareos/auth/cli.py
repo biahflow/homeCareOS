@@ -25,20 +25,28 @@ from sqlalchemy.exc import IntegrityError
 from homecareos.auth import senhas
 from homecareos.auth.router import normalizar_email
 from homecareos.auth.schema import Papel
+from homecareos.config import get_settings
 from homecareos.db.models import Usuario
 from homecareos.db.session import get_sessionmaker
 
 
-def _ler_senha() -> str:
-    """Lê a senha duas vezes, sem eco, e recusa divergência e senha vazia.
+def _ler_senha(*, minimo: int) -> str:
+    """Lê a senha duas vezes, sem eco, e recusa divergência e senha fraca.
 
-    A confirmação existe porque não há recuperação de senha nesta entrega: um
-    erro de digitação aqui criaria um usuário que ninguém consegue usar e que
-    só um segundo comando conserta.
+    A validação de força usa a **mesma** `senhas.validar_forca` do endpoint de
+    redefinição (issue #34): sem isso o caminho administrativo aceitaria a senha
+    que o caminho do usuário recusa, e o piso viraria uma sugestão.
+
+    Ela roda **antes** da confirmação, e não depois: não faz sentido pedir para
+    digitar duas vezes uma senha que vai ser recusada de qualquer jeito.
+
+    A confirmação continua existindo mesmo agora que há recuperação de senha por
+    e-mail: ela depende de SMTP configurado (ver `mailer/provider.py`), e um erro
+    de digitação aqui criaria um usuário que ninguém consegue usar justamente na
+    instalação em que a recuperação está desligada.
     """
     senha = getpass.getpass("Senha: ")
-    if not senha:
-        raise ValueError("senha vazia")
+    senhas.validar_forca(senha, minimo=minimo)
     if senha != getpass.getpass("Confirme a senha: "):
         raise ValueError("as senhas não conferem")
     return senha
@@ -54,7 +62,7 @@ def criar(nome: str, email: str, papel: str) -> int:
         return 1
 
     try:
-        senha = _ler_senha()
+        senha = _ler_senha(minimo=get_settings().senha_minima_caracteres)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
