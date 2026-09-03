@@ -1,5 +1,8 @@
-"""Testes de integração de `GET /api/documentos`, `GET /api/documentos/{id}` e
-`POST /api/documentos/{id}/revalidar` — contra Postgres real (localhost:5434).
+"""Testes de integração de `GET /api/documentos` e `GET /api/documentos/{id}`
+— contra Postgres real (localhost:5434).
+
+`POST /api/documentos/{id}/revalidar` deixou de ser um stub 501 (issue #7) e
+tem suíte própria em `tests/test_api_revalidar.py`.
 
 O banco é compartilhado com outras trilhas rodando em paralelo, então cada
 teste cria só os documentos de que precisa sob `COMPETENCIA_TESTE` (um valor
@@ -263,18 +266,3 @@ def test_obter_documento_traz_extracao_e_validacoes(
         sessao.execute(text("delete from validacoes where id = :id"), {"id": validacao.id})
         sessao.execute(text("delete from regras where id = :id"), {"id": regra.id})
         sessao.commit()
-
-
-# --- POST /revalidar: stub honesto (issue #5 é de outra trilha) -------------
-
-
-def test_revalidar_responde_501_com_mensagem_honesta(api: TestClient) -> None:
-    resposta = api.post(f"/api/documentos/{uuid.uuid4()}/revalidar", headers=AUTH_HEADERS)
-
-    assert resposta.status_code == 501
-    corpo = resposta.json()
-    mensagem = corpo["error"]["mensagem"].lower()
-    assert "regra" in mensagem
-    # nunca finge sucesso: não pode haver um corpo que pareça resultado de validação.
-    assert "aprovado" not in mensagem
-    assert "reprovado" not in mensagem

@@ -1,26 +1,43 @@
 """Testes de integração de `GET/PATCH /api/pendencias` e `GET
 /api/pendencias/resumo` — contra Postgres real (localhost:5434).
 
-Nada no sistema cria pendências ainda (issue #7 é de outra trilha) — a tabela
-é, por construção, só o que este teste grava e depois apaga. Cada teste cria
-seu próprio documento-âncora e suas próprias pendências (via ORM direto, não
-via API — não existe endpoint de criação) e remove tudo ao final.
+Dois grupos de teste convivem aqui. Os de listagem/resumo criam pendências via
+ORM direto (não existe endpoint de criação) sobre um documento-âncora. Os do
+ciclo de correção (issue #7) partem de uma classificação de verdade — operadora,
+regra ativa e extração — e exercitam `aberta -> em_correcao -> resolvida` com a
+propagação para o documento e a revalidação automática.
+
+O banco é compartilhado com o desenvolvimento: cada fixture apaga tudo o que
+criou, e nenhuma asserção conta linhas sem filtrar pelos próprios registros.
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from homecareos.config import Settings, get_settings
-from homecareos.db.models import Documento, Pendencia, PendenciaStatus, TipoDocumento
+from homecareos.db.models import (
+    Documento,
+    DocumentoStatus,
+    Extracao,
+    LogConferencia,
+    Operadora,
+    Pendencia,
+    PendenciaStatus,
+    Regra,
+    TipoDocumento,
+)
 from homecareos.db.session import get_sessionmaker
+from homecareos.extraction.schema import EvolucaoProntuario
 from homecareos.main import app
 from tests.conftest import AUTH_HEADERS, TEST_API_KEY
 
@@ -91,9 +108,15 @@ def documento_ancora(sessao: Session, operadora_id: uuid.UUID) -> Iterator[Docum
 
     yield documento
 
-    sessao.execute(text("delete from pendencias where documento_id = :id"), {"id": documento.id})
-    sessao.execute(text("delete from documentos where id = :id"), {"id": documento.id})
+    _limpar_documentos(sessao, [documento.id])
     sessao.commit()
+
+
+def _limpar_documentos(sessao: Session, ids: list[uuid.UUID]) -> None:
+    """Apaga tudo o que pende de `ids`, na ordem que respeita as FKs."""
+    for tabela in ("pendencias", "validacoes", "extracoes", "log_conferencia"):
+        sessao.execute(text(f"delete from {tabela} where documento_id = any(:ids)"), {"ids": ids})
+    sessao.execute(text("delete from documentos where id = any(:ids)"), {"ids": ids})
 
 
 @pytest.fixture
@@ -272,3 +295,244 @@ def test_resumo_pendencias_conta_por_status_e_faixa_deadline(
     assert corpo["por_faixa_deadline"]["vencidas"] >= 1
     assert corpo["por_faixa_deadline"]["proximos_7_dias"] >= 1
     assert corpo["por_faixa_deadline"]["futuras"] >= 1
+
+
+# --- issue #7: ciclo de correção propagado para o documento -------------------
+
+
+@dataclass
+class Ciclo:
+    """Um documento já classificado, com a pendência que a classificação abriu."""
+
+    operadora: Operadora
+    documento: Documento
+    pendencia: Pendencia
+
+
+def _extracao(
+    sessao: Session,
+    documento_id: uuid.UUID,
+    *,
+    carimbo_legivel: bool,
+    created_at: datetime | None = None,
+) -> Extracao:
+    extracao = Extracao(
+        documento_id=documento_id,
+        campos_extraidos=EvolucaoProntuario(carimbo_legivel=carimbo_legivel).model_dump(
+            mode="json"
+        ),
+        confianca=0.9,
+        confianca_por_campo={},
+        modelo="modelo-teste",
+        provider="teste",
+    )
+    if created_at is not None:
+        extracao.created_at = created_at
+    sessao.add(extracao)
+    sessao.commit()
+    return extracao
+
+
+@pytest.fixture
+def ciclo(api: TestClient, sessao: Session) -> Iterator[Ciclo]:
+    """Documento reprovado por uma regra `rejeitar`, classificado via `POST /revalidar`.
+
+    A pendência não é inserida à mão de propósito: quem a cria é a
+    classificação, e é isso que os testes deste bloco precisam exercitar.
+    """
+    operadora = Operadora(nome="Operadora Ciclo", codigo=f"CICLO-{uuid.uuid4()}")
+    sessao.add(operadora)
+    sessao.flush()
+    sessao.add(
+        Regra(
+            operadora_id=operadora.id,
+            campo="carimbo_legivel",
+            condicao=json.dumps({"tipo": "verdadeiro"}),
+            acao="sinalizar",
+            motivo_glosa="Carimbo ilegível",
+        )
+    )
+    documento = Documento(
+        operadora_id=operadora.id,
+        tipo=TipoDocumento.EVOLUCAO,
+        arquivo_url="s3://fake/pendencias-ciclo",
+        competencia=COMPETENCIA_TESTE,
+        status=DocumentoStatus.PROCESSANDO,
+    )
+    sessao.add(documento)
+    sessao.commit()
+
+    _extracao(sessao, documento.id, carimbo_legivel=False)
+    resposta = api.post(f"/api/documentos/{documento.id}/revalidar", headers=AUTH_HEADERS)
+    assert resposta.status_code == 200
+    assert resposta.json()["status"] == "problema"
+
+    pendencia = sessao.scalars(
+        select(Pendencia).where(Pendencia.documento_id == documento.id)
+    ).one()
+
+    yield Ciclo(operadora=operadora, documento=documento, pendencia=pendencia)
+
+    _limpar_documentos(sessao, [documento.id])
+    sessao.execute(text("delete from regras where operadora_id = :id"), {"id": operadora.id})
+    sessao.execute(text("delete from operadoras where id = :id"), {"id": operadora.id})
+    sessao.commit()
+
+
+def _status_do_documento(sessao: Session, documento_id: uuid.UUID) -> DocumentoStatus:
+    sessao.expire_all()
+    documento = sessao.get(Documento, documento_id)
+    assert documento is not None
+    return documento.status
+
+
+def _acoes_de_log(sessao: Session, documento_id: uuid.UUID) -> list[str]:
+    sessao.expire_all()
+    return [
+        log.acao
+        for log in sessao.scalars(
+            select(LogConferencia)
+            .where(LogConferencia.documento_id == documento_id)
+            .order_by(LogConferencia.created_at)
+        )
+    ]
+
+
+def test_classificacao_abre_pendencia_com_deadline_e_responsavel(
+    sessao: Session, ciclo: Ciclo
+) -> None:
+    """AC: pendência criada com deadline quando o documento vira `problema`."""
+    assert ciclo.pendencia.status is PendenciaStatus.ABERTA
+    assert ciclo.pendencia.tipo_problema == "campo_invalido"
+    assert ciclo.pendencia.responsavel == get_settings().pendencia_responsavel_padrao
+    # Competência 2099-03 + dia_envio padrão (10) => 2099-04-10, fim do dia.
+    assert ciclo.pendencia.deadline == datetime(2099, 4, 10, 23, 59, 59, tzinfo=UTC)
+    assert _status_do_documento(sessao, ciclo.documento.id) is DocumentoStatus.PROBLEMA
+
+
+def test_listagem_expoe_o_campo_que_originou_a_pendencia(api: TestClient, ciclo: Ciclo) -> None:
+    """`campo` é aditivo no contrato e é a chave que a revalidação usa para reconciliar."""
+    resposta = api.get(f"/api/pendencias?operadora_id={ciclo.operadora.id}", headers=AUTH_HEADERS)
+
+    assert resposta.status_code == 200
+    (item,) = resposta.json()["data"]
+    assert item["campo"] == "carimbo_legivel"
+
+
+def test_pendencia_em_correcao_leva_o_documento_para_em_correcao(
+    api: TestClient, sessao: Session, ciclo: Ciclo
+) -> None:
+    resposta = api.patch(
+        f"/api/pendencias/{ciclo.pendencia.id}",
+        json={"status": "em_correcao"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert resposta.status_code == 200
+    assert _status_do_documento(sessao, ciclo.documento.id) is DocumentoStatus.EM_CORRECAO
+    assert "transicao:problema->em_correcao" in _acoes_de_log(sessao, ciclo.documento.id)
+
+
+def test_patch_reatribui_o_responsavel_da_pendencia(
+    api: TestClient, sessao: Session, ciclo: Ciclo
+) -> None:
+    resposta = api.patch(
+        f"/api/pendencias/{ciclo.pendencia.id}",
+        json={"status": "em_correcao", "responsavel": "ana.enfermagem"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert resposta.status_code == 200
+    assert resposta.json()["responsavel"] == "ana.enfermagem"
+
+
+def test_ciclo_completo_problema_correcao_revalidacao_liberado(
+    api: TestClient, sessao: Session, ciclo: Ciclo
+) -> None:
+    """AC: `problema -> pendência -> correção -> revalidação -> liberado`."""
+    api.patch(
+        f"/api/pendencias/{ciclo.pendencia.id}",
+        json={"status": "em_correcao"},
+        headers=AUTH_HEADERS,
+    )
+    # A correção real chega como uma extração nova; a revalidação lê a última.
+    _extracao(
+        sessao,
+        ciclo.documento.id,
+        carimbo_legivel=True,
+        created_at=datetime.now(UTC) + timedelta(minutes=1),
+    )
+
+    resposta = api.patch(
+        f"/api/pendencias/{ciclo.pendencia.id}",
+        json={"status": "resolvida"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert resposta.status_code == 200
+    assert resposta.json()["status"] == "resolvida"
+    assert _status_do_documento(sessao, ciclo.documento.id) is DocumentoStatus.LIBERADO
+    acoes = _acoes_de_log(sessao, ciclo.documento.id)
+    assert acoes == [
+        "transicao:processando->problema",
+        "transicao:problema->em_correcao",
+        "transicao:em_correcao->resolvido",
+        "transicao:resolvido->liberado",
+    ]
+
+
+def test_revalidacao_que_reprova_de_novo_reabre_o_bucket_com_pendencia_nova(
+    api: TestClient, sessao: Session, ciclo: Ciclo
+) -> None:
+    """A extração continua reprovando: o documento não pode ficar preso em `resolvido`."""
+    api.patch(
+        f"/api/pendencias/{ciclo.pendencia.id}",
+        json={"status": "em_correcao"},
+        headers=AUTH_HEADERS,
+    )
+
+    resposta = api.patch(
+        f"/api/pendencias/{ciclo.pendencia.id}",
+        json={"status": "resolvida"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert resposta.status_code == 200
+    assert _status_do_documento(sessao, ciclo.documento.id) is DocumentoStatus.PROBLEMA
+    abertas = list(
+        sessao.scalars(
+            select(Pendencia).where(
+                Pendencia.documento_id == ciclo.documento.id,
+                Pendencia.status != PendenciaStatus.RESOLVIDA,
+            )
+        )
+    )
+    assert len(abertas) == 1
+    assert abertas[0].id != ciclo.pendencia.id
+
+
+def test_revalidacao_indisponivel_deixa_o_documento_em_resolvido_e_responde_200(
+    api: TestClient, sessao: Session, ciclo: Ciclo
+) -> None:
+    """Falha da revalidação automática não pode desfazer a transição do usuário."""
+    api.patch(
+        f"/api/pendencias/{ciclo.pendencia.id}",
+        json={"status": "em_correcao"},
+        headers=AUTH_HEADERS,
+    )
+    # Sem regra ativa não há contra o que revalidar.
+    sessao.execute(
+        text("update regras set ativo = false where operadora_id = :id"),
+        {"id": ciclo.operadora.id},
+    )
+    sessao.commit()
+
+    resposta = api.patch(
+        f"/api/pendencias/{ciclo.pendencia.id}",
+        json={"status": "resolvida"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert resposta.status_code == 200
+    assert _status_do_documento(sessao, ciclo.documento.id) is DocumentoStatus.RESOLVIDO
+    assert "revalidacao:indisponivel" in _acoes_de_log(sessao, ciclo.documento.id)

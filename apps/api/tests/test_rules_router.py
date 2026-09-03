@@ -108,6 +108,11 @@ def test_post_regra_valida_cria_e_persiste(
     loaded = db_session.get(Regra, regra_id)
     assert loaded is not None
     assert loaded.campo == "carimbo_legivel"
+    # `RegraCreate.acao` virou `AcaoRegra` (StrEnum) na issue #7. A coluna é
+    # `String` livre e continua guardando o valor do fio, não `repr` do enum —
+    # é o que mantém `RegraOut.acao` e o motor de regras lendo a mesma coisa.
+    assert loaded.acao == "rejeitar"
+    assert corpo["acao"] == "rejeitar"
 
 
 def test_post_regra_condicao_desconhecida_retorna_422_e_nao_grava(

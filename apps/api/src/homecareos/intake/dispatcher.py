@@ -4,8 +4,8 @@ A porta é declarada aqui, e não no pacote `extraction`, de propósito. O intak
 precisa dizer "extraia esta página" sem saber se isso acontece na mesma
 requisição, numa fila ou num serviço separado — e sem importar nada do pacote
 de extração. A implementação síncrona vive em
-`homecareos.extraction.dispatcher`; a issue #7 troca aquela implementação por
-uma que enfileira, sem tocar em nada aqui.
+`homecareos.extraction.dispatcher`; trocá-la por uma que enfileira não exige
+tocar em nada aqui.
 
 O tipo da página é o `PageImage` do próprio intake. `PaginaDocumento`
 (`extraction/schema.py`) é o Protocol estrutural equivalente do outro lado, e

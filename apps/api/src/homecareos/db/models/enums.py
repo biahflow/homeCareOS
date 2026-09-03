@@ -22,14 +22,19 @@ class TipoDocumento(enum.StrEnum):
 class DocumentoStatus(enum.StrEnum):
     """Status do documento no ciclo de conferência pré-faturamento.
 
-    Ciclos válidos (a máquina de estados que impõe as transições fica fora
-    de escopo desta trilha — issue #2 cobre só a modelagem de dados):
+    Ciclos válidos (a máquina de estados que impõe as transições vive em
+    `homecareos.classification.service._TRANSICOES_VALIDAS`, que é a
+    autoridade — este texto é o resumo legível dela):
 
         processando -> aprovado
             (documento aprovado direto, segue pro faturamento)
 
         processando -> problema    -> em_correcao -> resolvido -> liberado
         processando -> incompleto  -> em_correcao -> resolvido -> liberado
+
+    A revalidação (`classification.service.revalidar_documento`) pode reprovar
+    de novo: de `resolvido` o documento volta para `problema`/`incompleto` em
+    vez de seguir para `liberado`, e o ciclo recomeça.
     """
 
     PROCESSANDO = "processando"

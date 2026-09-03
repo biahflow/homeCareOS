@@ -19,7 +19,7 @@ from homecareos.db.models.enums import ResultadoValidacao
 from homecareos.db.models.regra import Regra
 from homecareos.extraction.schema import CategoriaProfissional, EvolucaoProntuario
 from homecareos.rules.engine import validar
-from homecareos.rules.schema import CondicaoTypeAdapter
+from homecareos.rules.schema import AcaoRegra, CondicaoTypeAdapter
 
 
 def _campos_completos(**overrides: object) -> EvolucaoProntuario:
@@ -319,3 +319,50 @@ def test_regex_legitima_de_coren_continua_aceita() -> None:
     condicao = CondicaoTypeAdapter.validate_python({"tipo": "formato", "regex": r"^\d{2}\.\d{3}$"})
 
     assert condicao.tipo == "formato"
+
+
+# --- 10: `acao` da regra viaja no resultado (issue #7) --------------------------
+
+
+@pytest.mark.parametrize(
+    ("acao_no_banco", "esperada"),
+    [
+        ("aprovar", AcaoRegra.APROVAR),
+        ("sinalizar", AcaoRegra.SINALIZAR),
+        ("rejeitar", AcaoRegra.REJEITAR),
+    ],
+)
+def test_acao_da_regra_viaja_no_resultado(acao_no_banco: str, esperada: AcaoRegra) -> None:
+    """É `acao` que decide o bucket de glosa — sem ela a classificação não existe."""
+    regra = _regra("carimbo_legivel", {"tipo": "verdadeiro"}, acao=acao_no_banco)
+    campos = _campos_completos(carimbo_legivel=False)
+
+    (resultado,) = validar(campos, [regra], competencia="2024-03")
+
+    assert resultado.acao is esperada
+
+
+def test_acao_desconhecida_no_banco_vira_sinalizar() -> None:
+    """`regras.acao` é `String` livre: valor inválido gravado à mão não pode aprovar nem travar.
+
+    `sinalizar` é o desconhecido seguro — manda um humano olhar. `aprovar`
+    silenciaria a violação; `rejeitar` bloquearia o documento por um erro de
+    digitação de quem cadastrou a regra.
+    """
+    regra = _regra("carimbo_legivel", {"tipo": "verdadeiro"}, acao="glosar")
+    campos = _campos_completos(carimbo_legivel=False)
+
+    (resultado,) = validar(campos, [regra], competencia="2024-03")
+
+    assert resultado.acao is AcaoRegra.SINALIZAR
+
+
+def test_condicao_malformada_tambem_carrega_a_acao() -> None:
+    """A reprovação defensiva não pode virar pendência sem bucket."""
+    regra = _regra("carimbo_legivel", {"tipo": "inexistente"}, acao="rejeitar")
+    campos = _campos_completos()
+
+    (resultado,) = validar(campos, [regra], competencia="2024-03")
+
+    assert resultado.resultado is ResultadoValidacao.REPROVADO
+    assert resultado.acao is AcaoRegra.REJEITAR

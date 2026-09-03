@@ -8,6 +8,7 @@ escrever `if operadora == "..."` em código. Ver `rules/engine.py` para como ela
 
 from __future__ import annotations
 
+import enum
 import json
 import re
 import uuid
@@ -109,6 +110,21 @@ CondicaoSe.model_rebuild()
 CondicaoTypeAdapter: TypeAdapter[Condicao] = TypeAdapter(Condicao)
 
 
+class AcaoRegra(enum.StrEnum):
+    """O que fazer quando a condição da regra NÃO é satisfeita.
+
+    Existe como enum, e não como `Literal`, porque a classificação em buckets
+    de glosa (`classification/engine.py`) precisa comparar contra membros e
+    não contra string crua: é `acao` que decide se a reprovação vira
+    `incompleto` (campo obrigatório faltando, volta pro campo) ou `problema`
+    (algo a conferir antes do envio).
+    """
+
+    APROVAR = "aprovar"
+    SINALIZAR = "sinalizar"
+    REJEITAR = "rejeitar"
+
+
 class ResultadoAvaliacao(BaseModel):
     """Resultado da avaliação de uma `Regra` contra um `EvolucaoProntuario`.
 
@@ -121,6 +137,9 @@ class ResultadoAvaliacao(BaseModel):
     regra_id: uuid.UUID
     resultado: ResultadoValidacao
     detalhe: str
+    # Sem default de propósito: a `acao` da regra é o que determina o bucket do
+    # documento, e um default silencioso esconderia o esquecimento de passá-la.
+    acao: AcaoRegra
     motivo_glosa: str | None = None
 
 
@@ -128,7 +147,7 @@ class RegraCreate(BaseModel):
     operadora_id: uuid.UUID
     campo: str = Field(min_length=1)
     condicao: dict[str, Any]
-    acao: Literal["aprovar", "sinalizar", "rejeitar"]
+    acao: AcaoRegra
     motivo_glosa: str = Field(min_length=1)
 
 

@@ -23,6 +23,13 @@ class Pendencia(Base):
         UUID(as_uuid=True), ForeignKey("documentos.id"), nullable=False
     )
     tipo_problema: Mapped[str] = mapped_column(String, nullable=False)
+    # Campo do schema de extração que originou a pendência. É a chave (junto com
+    # `tipo_problema`) que a revalidação usa para reconciliar o que já está
+    # aberto com o que voltou a reprovar — ver
+    # `classification.service._reconciliar_pendencias`. Nullable: pendência
+    # anterior à issue #7 não tem campo conhecido, e forjar um valor faria a
+    # reconciliação casar coisas que não são a mesma.
+    campo: Mapped[str | None] = mapped_column(String, nullable=True)
     descricao: Mapped[str] = mapped_column(String, nullable=False)
     responsavel: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[PendenciaStatus] = mapped_column(

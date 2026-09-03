@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # — em qualquer outro ambiente a aplicação recusa subir (ver `main.py`).
     api_keys: str = ""
 
+    # Responsável atribuído a toda pendência que a classificação abre. Não é um
+    # id de usuário porque não existe modelo de usuário ainda: a atribuição real
+    # a uma pessoa acontece por reatribuição via `PATCH /api/pendencias/{id}`.
+    pendencia_responsavel_padrao: str = "equipe-conferencia"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

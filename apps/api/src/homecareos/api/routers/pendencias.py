@@ -1,7 +1,10 @@
 """`GET /api/pendencias`, `PATCH /api/pendencias/{id}` e `GET /api/pendencias/resumo`.
 
-Nada cria pendências ainda (issue #7, fora desta trilha) — as tabelas ficam
-vazias até lá, e isso é o esperado. Nenhum dado de exemplo é inserido aqui.
+Quem cria pendências é a classificação (`homecareos.classification.service`),
+nunca este router: aqui a equipe só as transiciona. O `PATCH` é o ponto em que
+o ciclo de correção avança, e por isso ele propaga a transição da pendência
+para o documento — inclusive disparando a revalidação quando a última pendência
+do documento é resolvida.
 """
 
 from __future__ import annotations
@@ -21,7 +24,13 @@ from homecareos.api.pagination import (
     envelope_paginado,
     paginacao_params,
 )
-from homecareos.db.models import Documento, Pendencia, PendenciaStatus
+from homecareos.classification.errors import RevalidacaoIndisponivelError
+from homecareos.classification.service import (
+    registrar_log,
+    revalidar_documento,
+    transicionar,
+)
+from homecareos.db.models import Documento, DocumentoStatus, Pendencia, PendenciaStatus
 from homecareos.db.session import get_session
 
 router = APIRouter(prefix="/api/pendencias", tags=["pendencias"])
@@ -44,6 +53,8 @@ class PendenciaItem(BaseModel):
     id: uuid.UUID
     documento_id: uuid.UUID
     tipo_problema: str
+    # Nulo em pendência anterior à classificação automática (issue #7).
+    campo: str | None
     descricao: str
     responsavel: str
     status: PendenciaStatus
@@ -56,6 +67,10 @@ class PendenciaItem(BaseModel):
 
 class AtualizarPendenciaRequest(BaseModel):
     status: PendenciaStatus
+    # Opcional: fecha o passo "pendência é atribuída a um responsável" do ciclo,
+    # sem tornar obrigatório repetir o responsável a cada transição. `status`
+    # continua obrigatório — o PATCH é, antes de tudo, uma transição.
+    responsavel: str | None = None
 
 
 class ResumoPendencias(BaseModel):
@@ -179,9 +194,82 @@ def atualizar_pendencia(
         )
 
     pendencia.status = corpo.status
+    if corpo.responsavel is not None:
+        pendencia.responsavel = corpo.responsavel
     if corpo.status == PendenciaStatus.RESOLVIDA:
         pendencia.resolved_at = datetime.now(UTC)
     session.commit()
+
+    _propagar_para_o_documento(session, pendencia)
     session.refresh(pendencia)
 
     return PendenciaItem.model_validate(pendencia)
+
+
+def _propagar_para_o_documento(session: Session, pendencia: Pendencia) -> None:
+    """Reflete no documento a transição que acabou de acontecer na pendência.
+
+    A pendência já foi commitada antes desta chamada, e de propósito: a
+    transição é do usuário e não pode ser desfeita por uma falha do
+    encadeamento automático que vem depois dela.
+    """
+    documento = session.get(Documento, pendencia.documento_id)
+    if documento is None:  # FK garante que não acontece; guarda para o mypy
+        return
+
+    if pendencia.status is PendenciaStatus.EM_CORRECAO:
+        # Só a primeira pendência a entrar em correção move o documento; da
+        # segunda em diante ele já está em `em_correcao` e não há o que fazer.
+        if documento.status in {DocumentoStatus.PROBLEMA, DocumentoStatus.INCOMPLETO}:
+            transicionar(
+                session,
+                documento,
+                DocumentoStatus.EM_CORRECAO,
+                usuario="api",
+                detalhe=f"pendência {pendencia.id} entrou em correção",
+            )
+            session.commit()
+        return
+
+    if pendencia.status is not PendenciaStatus.RESOLVIDA:
+        return
+
+    pendentes = session.execute(
+        select(func.count())
+        .select_from(Pendencia)
+        .where(
+            Pendencia.documento_id == documento.id,
+            Pendencia.status != PendenciaStatus.RESOLVIDA,
+        )
+    ).scalar_one()
+    if pendentes > 0:
+        return
+    # Fora de `em_correcao` não há correção em curso para concluir (pendência
+    # criada à mão, documento ainda em `processando`): não há o que propagar.
+    if documento.status is not DocumentoStatus.EM_CORRECAO:
+        return
+
+    transicionar(
+        session,
+        documento,
+        DocumentoStatus.RESOLVIDO,
+        usuario="api",
+        detalhe="todas as pendências do documento foram resolvidas",
+    )
+    session.commit()
+
+    try:
+        revalidar_documento(session, documento.id, usuario="api")
+    except RevalidacaoIndisponivelError as exc:
+        # Nunca 500: a transição da pendência é do usuário e já aconteceu. Se a
+        # revalidação automática não tem insumo (documento sem extração, sem
+        # operadora, operadora sem regra ativa), o documento fica em `resolvido`
+        # esperando ação humana e o motivo fica registrado para quem for olhar.
+        registrar_log(
+            session,
+            documento_id=documento.id,
+            acao="revalidacao:indisponivel",
+            usuario="api",
+            detalhe=str(exc),
+        )
+        session.commit()
