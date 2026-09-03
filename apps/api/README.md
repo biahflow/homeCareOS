@@ -68,3 +68,62 @@ arquivo abrir com colunas separadas e acentuação correta no Excel em portuguê
 Um `.xlsx` de verdade exigiria dependência nova (`openpyxl`) sem ganho neste
 momento — **desvio consciente** da issue, que pede "CSV/Excel", registrado
 também na docstring de `src/homecareos/reports/csv_export.py`.
+
+## Alertas de WhatsApp
+
+Quatro alertas (issue #9), enviados por um gateway de WhatsApp e registrados em
+`alertas_enviados`. Endpoints sob `/api/alertas` — protegidos por `X-API-Key`
+como todo o resto de `/api/*`:
+
+- `POST /varredura` — roda os quatro detectores e envia o que for novo. É o
+  mesmo trabalho de `python -m homecareos.alerts.scan`
+  (`docker compose run --rm api-alertas`), que é o que o cron chama.
+- `GET ""` — o log paginado do que foi enviado, falhou ou foi suprimido,
+  filtrável por `tipo`, `status` e `documento_id`.
+
+### uazapi, e não Z-API — desvio consciente
+
+A issue #9 nomeia a Z-API; o gateway contratado é a **uazapi**, e é ela que
+está implementada. O desvio é barato porque a camada de alertas só conhece a
+porta `WhatsAppProvider` ("entregue este texto para este número, ou levante
+`EnvioError`"): trocar de gateway é escrever outra implementação e mudar
+configuração, não reescrever detector, template ou log. O contrato verificado
+da uazapi (header `token` literal e minúsculo, `POST /send/text`) está na
+docstring de `src/homecareos/alerts/uazapi.py`.
+
+O token da instância é credencial de envio e **nunca** aparece em log, `repr`,
+mensagem de exceção ou linha do banco. `alertas_enviados.mensagem`, por outro
+lado, guarda o texto enviado — inclusive o nome do paciente — e isso é decisão
+consciente de auditabilidade, justificada em `src/homecareos/db/models/alerta.py`.
+
+### Os quatro detectores
+
+| Tipo | Dispara quando |
+| --- | --- |
+| `documento_incompleto_critico` | documento `incompleto` com pendência não resolvida em `carimbo_presente`, `carimbo_legivel` ou `assinatura_profissional_presente` |
+| `deadline_competencia` | há pendência em aberto com deadline dentro de `ALERTAS_DIAS_ANTES_DEADLINE`, agrupado por competência e operadora |
+| `volume_anormal` | a taxa de problema de hoje passa da média da janela vezes `ALERTAS_VOLUME_FATOR` |
+| `pendencia_parada` | pendência `aberta` (não `em_correcao`) há mais de `ALERTAS_HORAS_PENDENCIA_PARADA` |
+
+`volume_anormal` só dispara com pelo menos `ALERTAS_VOLUME_MINIMO_DOCUMENTOS`
+documentos no dia e janela de referência não vazia. Sem esse piso, um único
+documento com problema num dia parado dá 100% de taxa e dispara alerta todo dia
+— o jeito mais rápido de ensinar a equipe a ignorar o WhatsApp.
+
+### Anti-bombardeio: duas defesas, uma delas silenciosa
+
+- **Cooldown** (`ALERTAS_COOLDOWN_HORAS`, mesmo assunto para o mesmo número):
+  pula **sem gravar linha**. A varredura roda de minuto em minuto; registrar
+  cada supressão encheria a tabela com centenas de linhas por dia por alerta e
+  esconderia as falhas de verdade no meio do ruído.
+- **Rate limit** (`ALERTAS_MAX_POR_HORA_POR_DESTINATARIO`): **grava** linha
+  `suprimido` com o motivo. Essa supressão é anômala — alguma notificação real
+  se perdeu — e alguém precisa poder descobrir isso depois.
+
+### O gancho na classificação
+
+Com `ALERTAS_HOOK_INLINE_HABILITADO=true` (padrão), o alerta de documento
+incompleto crítico sai já na classificação, sem esperar a varredura. O gancho é
+síncrono e está no caminho do upload (teto: `ALERTAS_TIMEOUT_SEGUNDOS`), abre a
+própria sessão e **nunca levanta**: notificação não pode derrubar ingestão de
+documento. `false` desliga o gancho e deixa o caso para a varredura periódica.
