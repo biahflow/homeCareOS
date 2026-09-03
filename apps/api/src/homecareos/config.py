@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 32 * 1024 * 1024
     pdf_render_dpi: int = 200
 
+    # Chaves de API válidas para autenticar requisições a `/api/*`, separadas
+    # por vírgula (permite rotação sem downtime: adiciona a nova, troca os
+    # clientes, remove a velha). Vazio só é aceito em `environment == "local"`
+    # — em qualquer outro ambiente a aplicação recusa subir (ver `main.py`).
+    api_keys: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
