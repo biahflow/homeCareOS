@@ -1,11 +1,17 @@
 import { ApiError } from "./erros";
 import type {
   AtualizarPendenciaParams,
+  BaselineOut,
+  BaselineUpsert,
   EsqueciSenhaParams,
   EuResposta,
+  FiltrosConferencia,
+  LinhaConferencia,
   ListarPendenciasParams,
   LoginParams,
   LoginResposta,
+  MetricasParams,
+  MetricasResponse,
   MfaCodigosRecuperacaoOut,
   MfaConfirmarParams,
   MfaDesativarParams,
@@ -14,6 +20,7 @@ import type {
   Operadora,
   PendenciaItem,
   RedefinirSenhaParams,
+  RelatorioConferenciaParams,
   RespostaPaginada,
   ResumoPendencias,
   UploadParams,
@@ -349,7 +356,7 @@ export async function redefinirSenha(
  * API valida cada filtro pelo tipo, então `status=undefined` seria 422 em vez
  * de "sem filtro" — um erro que aparece só quando alguém navega sem filtrar.
  */
-function queryString(params: Record<string, string | number | undefined>): string {
+function queryString(params: Record<string, string | number | boolean | undefined>): string {
   const busca = new URLSearchParams();
   for (const [chave, valor] of Object.entries(params)) {
     if (valor !== undefined) {
@@ -482,4 +489,177 @@ export async function listarOperadoras(
     opcoes,
   );
   return (await response.json()) as Operadora[];
+}
+
+/* Relatórios e métricas — `/api/relatorios` (issue #8). */
+
+const CAMINHO_CONFERENCIA = "/api/relatorios/conferencia";
+
+/**
+ * Os filtros do relatório na forma de query params — **um lugar só**, usado
+ * pela listagem JSON e pela URL do CSV.
+ *
+ * É o que garante que o arquivo baixado contenha exatamente as linhas que a
+ * tela está mostrando: dois montadores de query divergiriam no primeiro filtro
+ * novo, e o CSV passaria a mentir sobre o que exportou sem nenhum erro visível.
+ *
+ * `apenas_pendentes` só entra quando **ligado**: `false` é o default da API, e
+ * omiti-lo mantém a barra de endereços legível.
+ */
+function parametrosDaConferencia(
+  filtros: FiltrosConferencia,
+): Record<string, string | number | boolean | undefined> {
+  return {
+    competencia: filtros.competencia,
+    status: filtros.status,
+    operadora_id: filtros.operadora_id,
+    paciente_id: filtros.paciente_id,
+    data_inicio: filtros.data_inicio,
+    data_fim: filtros.data_fim,
+    apenas_pendentes: filtros.apenas_pendentes === true ? true : undefined,
+  };
+}
+
+/**
+ * `GET /api/relatorios/conferencia`: a página atual do relatório operacional.
+ *
+ * Legível pelos **três** papéis — é a lista que a conferente usa todo dia. As
+ * métricas agregadas ({@link metricas}) é que são leitura de gestão.
+ *
+ * Cada linha traz `severidade` decidida pela API. Ver {@link LinhaConferencia}:
+ * quem consome traduz severidade em estilo e **não** deriva cor do `status`.
+ *
+ * `cache: "no-store"` não é otimização às avessas: a resposta carrega nome de
+ * paciente e descrição de pendência, e uma tela compartilhada que volta do cache
+ * mostra a alguém o retrato de outra pessoa.
+ */
+export async function relatorioConferencia(
+  baseUrl: string,
+  params: RelatorioConferenciaParams = {},
+  opcoes?: OpcoesRequisicao,
+): Promise<RespostaPaginada<LinhaConferencia>> {
+  const response = await requisitar(
+    baseUrl,
+    `${CAMINHO_CONFERENCIA}${queryString({
+      ...parametrosDaConferencia(params),
+      limite: params.limite,
+      offset: params.offset,
+    })}`,
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as RespostaPaginada<LinhaConferencia>;
+}
+
+/**
+ * A URL de `GET /api/relatorios/conferencia.csv` com estes filtros — **só a
+ * string**, sem requisição nenhuma.
+ *
+ * O download é um link comum (`<a href>`) apontando para cá, e isso é decisão,
+ * não preguiça:
+ *
+ * - a URL é same-origin (o proxy do ADR 0002), então o cookie de sessão viaja
+ *   sozinho e não há credencial para montar aqui;
+ * - o navegador cuida do download, do nome do arquivo (`Content-Disposition`) e
+ *   de escrever direto em disco;
+ * - a API transmite o CSV em blocos, com uma sessão de banco própria aberta
+ *   dentro do gerador (`reports/router.py:_stream_csv`), justamente para nunca
+ *   carregar a competência inteira em memória. Um `fetch` + `blob` traria o
+ *   arquivo todo para a memória da aba e desfaria esse cuidado.
+ *
+ * O arquivo contém **nome de paciente** e fica salvo na máquina de quem baixou:
+ * quem oferecer este link precisa dizer isso ao lado dele.
+ */
+export function urlRelatorioConferenciaCsv(baseUrl: string, filtros: FiltrosConferencia): string {
+  return `${baseUrl}${CAMINHO_CONFERENCIA}.csv${queryString(parametrosDaConferencia(filtros))}`;
+}
+
+/**
+ * `GET /api/relatorios/metricas`: os dois blocos por competência.
+ *
+ * **Exige coordenador ou gestor** (`exigir_papel` no endpoint): métrica agregada
+ * é leitura de gestão, não de conferência. Para a conferente isto responde 403,
+ * e quem chama precisa tratar — não é falha, é a matriz do ADR 0001. Sem janela
+ * informada a API devolve as 12 competências mais recentes.
+ *
+ * Ver {@link MetricasCompetencia} para a regra que não pode ser quebrada na
+ * apresentação: `sistema` e `glosa_informada` nunca se fundem, e
+ * `glosa_informada: null` é "ninguém informou", nunca zero.
+ */
+export async function metricas(
+  baseUrl: string,
+  params: MetricasParams = {},
+  opcoes?: OpcoesRequisicao,
+): Promise<MetricasResponse> {
+  const response = await requisitar(
+    baseUrl,
+    `/api/relatorios/metricas${queryString({
+      competencia_inicio: params.competencia_inicio,
+      competencia_fim: params.competencia_fim,
+      operadora_id: params.operadora_id,
+    })}`,
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as MetricasResponse;
+}
+
+/**
+ * `GET /api/relatorios/baseline`: os baselines de glosa já registrados.
+ *
+ * **Exige coordenador ou gestor**, como {@link metricas} — quem escreve é só o
+ * gestor ({@link registrarBaseline}). Sem paginação e sem envelope: é um
+ * cadastro pequeno, uma linha por competência/operadora, e devolve o array
+ * direto.
+ */
+export async function listarBaselines(
+  baseUrl: string,
+  opcoes?: OpcoesRequisicao,
+): Promise<BaselineOut[]> {
+  const response = await requisitar(
+    baseUrl,
+    "/api/relatorios/baseline",
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as BaselineOut[];
+}
+
+/**
+ * `PUT /api/relatorios/baseline`: registra ou corrige o baseline de glosa de
+ * uma competência.
+ *
+ * **Exige o papel `gestor`, e aqui a autorização é o inverso da fila de
+ * pendências**: em `PATCH /api/pendencias/{id}` o gestor é justamente quem não
+ * pode agir; aqui ele é o único que pode. O baseline é a régua contra a qual o
+ * próprio sistema é medido, e quem opera a conferência não mexe na régua que a
+ * mede (ADR 0001). Esconder o formulário para os outros papéis é ergonomia; a
+ * autoridade é o **403** desta chamada, e a tela precisa continuar de pé quando
+ * ele chega.
+ *
+ * **É upsert pela chave natural `(competencia, operadora_id)`**: um `PUT` numa
+ * competência que já tem baseline **substitui** os valores, sem aviso da API.
+ * Não existe `DELETE` — corrigir é gravar de novo.
+ *
+ * 422 tem duas famílias que chegam diferentes: `documentos_glosados` maior que
+ * `documentos_enviados` (e demais validações de corpo) vem como "parâmetros
+ * inválidos" com a frase real em `detalhes` — use `detalhesDeValidacao`; já
+ * "operadora não encontrada" vem pronta em `message`.
+ */
+export async function registrarBaseline(
+  baseUrl: string,
+  corpo: BaselineUpsert,
+  opcoes?: OpcoesRequisicao,
+): Promise<BaselineOut> {
+  const response = await requisitar(
+    baseUrl,
+    "/api/relatorios/baseline",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(corpo),
+    },
+    opcoes,
+  );
+  return (await response.json()) as BaselineOut;
 }
