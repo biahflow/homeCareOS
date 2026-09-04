@@ -72,10 +72,11 @@ from homecareos.api.pagination import (
     envelope_paginado,
     paginacao_params,
 )
-from homecareos.auth import recuperacao, senhas, sessoes
+from homecareos.auth import auditoria, recuperacao, senhas, sessoes
 from homecareos.auth.dependencies import principal_atual
 from homecareos.auth.router import normalizar_email
 from homecareos.auth.schema import (
+    AcaoAuditoriaUsuario,
     Papel,
     Principal,
     UsuarioAtualizarRequest,
@@ -252,23 +253,32 @@ def listar_usuarios(
 )
 def criar_usuario(
     corpo: UsuarioCriarRequest,
+    principal: Annotated[Principal, Depends(principal_atual)],
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> UsuarioCriadoOut:
-    """A conta e o token de acesso a ela entram no **mesmo commit**, ou nenhum dos dois.
+    """A conta, o registro de auditoria e o token entram no **mesmo commit**, ou nenhum dos três.
 
     O `flush()` (e não um `SELECT` prévio "já existe esse e-mail?") é o que
     decide a colisão de cadastro: entre a consulta e o `INSERT` cabe outro
     cadastro, e o índice único de `usuarios.email` é a única autoridade sobre
     isso — ver a docstring de `db/models/usuario.py`.
 
+    O registro de auditoria (issue #30) é enfileirado **antes** de
+    `emitir_token`, de propósito: `criar_usuario` não tem `session.commit()`
+    próprio, e quem commita é `recuperacao.emitir_token` — enfileirar depois
+    da chamada deixaria o registro fora daquele commit. `usuario.id` já existe
+    aqui (é `default=uuid.uuid4` client-side, `db/models/usuario.py:41`), então
+    não é preciso esperar o `flush()` para ter o alvo.
+
     `emitir_token` devolve `None` quando o teto de emissões por hora do usuário
     foi atingido. Para uma conta recém-criada isso só acontece com
     `SENHA_RESET_MAX_POR_HORA <= 0` (configuração), mas **não pode passar em
     silêncio**: sem o token, a conta nasceria sem nenhum caminho de primeiro
     acesso e ninguém perceberia até a pessoa reclamar. O `None` não commitou
-    nada, então o `rollback()` desfaz também a criação — e o 503 diz que o
-    usuário não foi criado, o que é verdade e é o que permite tentar de novo.
+    nada, então o `rollback()` desfaz também a criação **e o registro de
+    auditoria** — e o 503 diz que o usuário não foi criado, o que é verdade e é
+    o que permite tentar de novo.
     """
     agora = datetime.now(UTC)
     _recusar_papel_nao_atribuivel(corpo.papel)
@@ -294,6 +304,19 @@ def criar_usuario(
             status_code=status.HTTP_409_CONFLICT,
             detail=MENSAGEM_EMAIL_EM_USO,
         ) from exc
+
+    auditoria.registrar(
+        session,
+        usuario=principal.rotulo,
+        usuario_id=principal.usuario_id,
+        alvo_usuario_id=usuario.id,
+        alvo_email=usuario.email,
+        acao=AcaoAuditoriaUsuario.CRIACAO,
+        mudancas={
+            "nome": {"de": None, "para": usuario.nome},
+            "papel": {"de": None, "para": usuario.papel},
+        },
+    )
 
     token = recuperacao.emitir_token(session, usuario, settings=settings, agora=agora)
     if token is None:
@@ -377,6 +400,12 @@ def atualizar_usuario(
 
     _recusar_esvaziar_a_coordenacao(session, usuario, corpo)
 
+    # Calculado **antes** de aplicar `corpo`: depois da atribuição não sobra
+    # "valor anterior" para comparar. Compara contra o valor atual do banco, e
+    # não contra "o campo veio no corpo" — um `PATCH` que reenvia o valor que já
+    # está lá não é mudança de fato, e não deve gerar registro de auditoria.
+    mudancas = auditoria.calcular_mudancas(usuario, corpo)
+
     if corpo.nome is not None:
         usuario.nome = corpo.nome
     if corpo.papel is not None:
@@ -390,6 +419,20 @@ def atualizar_usuario(
         # antigos, inclusive o de um dispositivo que ela não tem mais. Revogar é
         # o que faz a desativação fechar as portas em vez de encostá-las.
         sessoes.revogar_todas(session, usuario.id, agora=agora)
+    if mudancas:
+        # Só grava quando algo mudou de fato — ver o comentário acima de
+        # `calcular_mudancas`. Entra na mesma transação do `commit()` abaixo,
+        # que é o requisito duro da issue #30: `auditoria.registrar` não commita
+        # (ver a docstring de `auth/auditoria.py`).
+        auditoria.registrar(
+            session,
+            usuario=principal.rotulo,
+            usuario_id=principal.usuario_id,
+            alvo_usuario_id=usuario.id,
+            alvo_email=usuario.email,
+            acao=auditoria.classificar_acao(mudancas),
+            mudancas=mudancas,
+        )
     session.commit()
     session.refresh(usuario)
 

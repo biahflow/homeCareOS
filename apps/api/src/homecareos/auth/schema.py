@@ -12,6 +12,7 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -33,6 +34,23 @@ class Papel(enum.StrEnum):
     CONFERENTE = "conferente"
     COORDENADOR = "coordenador"
     GESTOR = "gestor"
+
+
+class AcaoAuditoriaUsuario(enum.StrEnum):
+    """Os tipos de evento de `auditoria_usuarios` (issue #30).
+
+    Fecha a escrita de `AuditoriaUsuario.acao`, que é `String` no banco — ver a
+    docstring de `db/models/auditoria_usuario.py` para a razão de não ser
+    `SAEnum` nativo. `DESATIVACAO`/`REATIVACAO` são o que a alteração de
+    `ativo` vira quando o `PATCH` a muda; `ALTERACAO` é qualquer outra mudança
+    de `nome`/`papel` sem mudança de `ativo` junto (ver
+    `auth.auditoria.classificar_acao`).
+    """
+
+    CRIACAO = "criacao"
+    ALTERACAO = "alteracao"
+    DESATIVACAO = "desativacao"
+    REATIVACAO = "reativacao"
 
 
 @dataclass(frozen=True)
@@ -174,6 +192,40 @@ class UsuarioCriadoOut(BaseModel):
 
     usuario: UsuarioOut
     token_definicao_senha: str
+
+
+class MudancaCampoOut(BaseModel):
+    """Um campo alterado num evento de `AuditoriaUsuarioOut`: de que valor para que valor.
+
+    `de`/`para` só carregam `nome` (str), `papel` (str) ou `ativo` (bool) — os
+    três campos que `PATCH /api/usuarios/{id}` altera. `de` é `None` na
+    criação: a conta ainda não existia, então não havia valor anterior.
+    """
+
+    de: str | bool | None
+    para: str | bool | None
+
+
+class AuditoriaUsuarioOut(BaseModel):
+    """Um evento de `GET /api/usuarios/auditoria`.
+
+    `usuario_id` é `None` e `usuario == "api"` quando o ator foi a chave de
+    integração (`X-API-Key`) — ver `auth.schema.ROTULO_MAQUINA` e a docstring
+    de `db/models/auditoria_usuario.py`. Nunca carrega `senha_hash`,
+    `mfa_secret`, `mfa_ultimo_passo` nem token nenhum, na tabela ou aqui —
+    mesma disciplina de `UsuarioOut`.
+    """
+
+    id: uuid.UUID
+    usuario: str
+    usuario_id: uuid.UUID | None
+    alvo_usuario_id: uuid.UUID
+    alvo_email: str
+    acao: AcaoAuditoriaUsuario
+    mudancas: dict[str, MudancaCampoOut]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class MfaPendenteOut(BaseModel):

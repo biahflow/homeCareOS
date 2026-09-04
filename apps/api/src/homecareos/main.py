@@ -36,6 +36,7 @@ from homecareos.api.routers.documentos import router as documentos_router
 from homecareos.api.routers.operadoras import router as operadoras_router
 from homecareos.api.routers.pacientes import router as pacientes_router
 from homecareos.api.routers.pendencias import router as pendencias_router
+from homecareos.auth.auditoria_router import router as auditoria_usuarios_router
 from homecareos.auth.dependencies import exigir_papel
 from homecareos.auth.router import router as auth_router
 from homecareos.auth.schema import Papel
@@ -105,6 +106,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # não sobre quem chama, e vale inclusive para a chave de máquina, que esta
     # linha (como todas as outras) deixa passar.
     app.include_router(usuarios_router, dependencies=[Depends(exigir_papel(Papel.COORDENADOR))])
+    # Leitura da auditoria administrativa (issue #30, fecha o ADR 0004): router
+    # próprio (ver a docstring de `auth/auditoria_router.py`), mesma restrição
+    # de papel dos dados que ela expõe.
+    app.include_router(
+        auditoria_usuarios_router, dependencies=[Depends(exigir_papel(Papel.COORDENADOR))]
+    )
 
     app.include_router(
         intake_router,

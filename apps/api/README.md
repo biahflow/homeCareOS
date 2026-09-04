@@ -496,12 +496,32 @@ responde **409 com mensagem neutra**, sem dizer nome nem papel de quem já está
 cadastrado: uma sessão de coordenador comprometida não pode virar oráculo de
 enumeração.
 
+#### Auditoria administrativa
+
+Toda criação, alteração, desativação e reativação de usuário grava um evento
+em `auditoria_usuarios` — quem fez, em quem, o que mudou (valor anterior e
+novo) e quando — na **mesma transação** da mutação (issue #30, fecha o ponto
+que o [ADR 0004](../../docs/adr/0004-administracao-de-usuarios-pela-api.md)
+deixou aberto). `GET /api/usuarios/auditoria` lê esse histórico, paginado, do
+evento mais recente para o mais antigo, filtrável por usuário-alvo (e por ator
+e por ação); é do coordenador, como as três rotas acima, mas vive em router
+próprio — ele não conta como uma quarta rota de `/api/usuarios`.
+
+Chamada por `X-API-Key` também é auditada: o ator sai com rótulo `"api"` e sem
+`usuario_id`, porque não existe "si mesmo" para a chave — a mesma convenção de
+`log_conferencia`. Um `PATCH` que não muda nada de fato (reenvia o valor que
+já está no banco) não grava evento — nada mudou. Nenhuma resposta e nenhuma
+linha desta tabela carregam `senha_hash`, `mfa_secret`, `mfa_ultimo_passo` ou
+token algum.
+
+**Sem política de retenção.** A tabela cresce a cada operação administrativa e
+não há expurgo nesta entrega. Não é descuido: por quanto tempo guardar auditoria
+que tem e-mail dentro é decisão de negócio e de LGPD, não de engenharia — e uma
+retenção escolhida no chute apagaria justamente a linha que uma investigação
+procura. Registrado nas limitações conhecidas, abaixo.
+
 #### Limitações honestas
 
-- **Não há auditoria da administração de usuário.** `log_conferencia` é ligada a
-  documento e não serve para registrar "quem promoveu fulano a coordenador". Uma
-  tabela de auditoria administrativa é migration, e fica para a sua própria
-  issue.
 - **O token de definição de senha expira em `SENHA_RESET_VALIDADE_MINUTOS` (30),
   e não há rota para reemiti-lo.** Se o administrador demorar a repassá-lo, a
   pessoa precisa pedir um link em `POST /api/auth/senha/esqueci` — que depende de
@@ -549,11 +569,9 @@ que a ausência:
 - **sem política que obrigue MFA**: o segundo fator existe desde a issue #35
   (ver "Segundo fator (MFA por TOTP)" acima), mas ativar é decisão de cada
   pessoa — não há configuração que o exija por papel ou para a operação inteira;
-- **sem auditoria da administração de usuário**: administrar usuário pela API
-  existe desde o ADR 0004 (ver "Administração de usuários" acima), mas não há
-  registro de quem criou, promoveu ou desativou quem — `log_conferencia` é ligada
-  a documento, e uma tabela de auditoria administrativa é migration com a sua
-  própria issue;
+- **sem retenção da auditoria administrativa**: `auditoria_usuarios` (issue #30,
+  ver "Auditoria administrativa" acima) não tem expurgo nem política de
+  retenção nesta entrega — cresce indefinidamente até essa decisão existir;
 - **sem criação de `gestor` pela API**: ele continua sendo criado por
   `python -m homecareos.auth.cli criar`, que exige acesso ao servidor. Não é
   lacuna: `gestor` é outro eixo da matriz, e deixá-lo atribuível por quem
