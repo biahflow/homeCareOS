@@ -6,6 +6,13 @@ por `app.dependency_overrides`, então `get_documento_repository`/`get_document_
 autenticação por `X-API-Key` (`AUTH_HEADERS`) só cria uma `Session` do
 SQLAlchemy sem conexão real (construção é preguiçosa) — nenhuma query chega a
 rodar nesse caminho, então isto continua sem round-trip a Postgres.
+
+Desde o ADR 0005 esta rota tem rate limit por identidade, e o contador dele vive
+no Postgres — a única dependency da rota que faria query de verdade. Ela é
+substituída junto com as outras, pelo mesmo motivo: aqui se testa o contrato do
+upload, e o freio tem suíte própria (`tests/test_api_rate_limit.py`), essa sim
+de integração. Sem a substituição, este módulo passaria a exigir banco e
+deixaria de ser executável sem container.
 """
 
 from __future__ import annotations
@@ -25,6 +32,8 @@ from homecareos.intake.router import (
     get_extraction_dispatcher,
 )
 from homecareos.intake.service import ACAO_EXTRACAO_FALHOU
+from homecareos.limites.dependencies import limitar
+from homecareos.limites.schema import Recurso
 from homecareos.main import app
 from tests.conftest import AUTH_HEADERS, TEST_API_KEY
 from tests.fakes import (
@@ -63,6 +72,10 @@ def api(
     app.dependency_overrides[get_documento_repository] = lambda: repository
     app.dependency_overrides[get_document_storage] = lambda: storage
     app.dependency_overrides[get_extraction_dispatcher] = lambda: dispatcher
+    # O freio do ADR 0005 conta no Postgres; aqui ele sai de cena (ver a
+    # docstring do módulo). `limitar` devolve sempre o mesmo objeto para o mesmo
+    # recurso, e é isso que faz esta chave casar com a dependency da rota.
+    app.dependency_overrides[limitar(Recurso.UPLOAD_DOCUMENTO)] = lambda: None
     app.dependency_overrides[get_settings] = lambda: Settings(api_keys=TEST_API_KEY)
     try:
         yield TestClient(app)
@@ -164,6 +177,7 @@ def test_falha_de_extracao_ainda_responde_201(
     app.dependency_overrides[get_documento_repository] = lambda: repository
     app.dependency_overrides[get_document_storage] = lambda: storage
     app.dependency_overrides[get_extraction_dispatcher] = lambda: FailingDispatcher()
+    app.dependency_overrides[limitar(Recurso.UPLOAD_DOCUMENTO)] = lambda: None
     app.dependency_overrides[get_settings] = lambda: Settings(api_keys=TEST_API_KEY)
     try:
         resposta = _upload(TestClient(app), make_pdf(2))
@@ -242,6 +256,7 @@ def test_storage_indisponivel_responde_503(
     app.dependency_overrides[get_documento_repository] = lambda: repository
     app.dependency_overrides[get_document_storage] = lambda: FailingStorage()
     app.dependency_overrides[get_extraction_dispatcher] = lambda: dispatcher
+    app.dependency_overrides[limitar(Recurso.UPLOAD_DOCUMENTO)] = lambda: None
     app.dependency_overrides[get_settings] = lambda: Settings(api_keys=TEST_API_KEY)
     try:
         resposta = _upload(TestClient(app), make_pdf(1))

@@ -68,6 +68,8 @@ from homecareos.db.session import get_session
 # provedores para o mesmo recurso significariam um teste trocando o storage do
 # upload e não o da leitura.
 from homecareos.intake.router import get_document_storage
+from homecareos.limites.dependencies import limitar
+from homecareos.limites.schema import Recurso
 from homecareos.storage import DocumentStorage, ObjectNotFoundError, content_type_for_key
 
 router = APIRouter(prefix="/api/documentos", tags=["documentos"])
@@ -249,11 +251,19 @@ def _nome_para_download(documento: Documento) -> str:
     ),
     responses={
         404: {"description": "Documento inexistente, ou arquivo ausente no storage"},
+        429: {"description": "Limite de downloads por hora atingido para esta identidade"},
         503: {"description": "Storage de documentos indisponível"},
     },
-    # Sem `dependencies=` própria: ler documento é dos três papéis, que é
-    # exatamente a regra que o `include_router` de `main.py` já aplica a este
+    # Sem `dependencies=` de PAPEL própria: ler documento é dos três papéis, que
+    # é exatamente a regra que o `include_router` de `main.py` já aplica a este
     # router. A exceção consciente daqui é a revalidação, mais abaixo.
+    #
+    # A dependency abaixo não é de papel: é o rate limit por identidade do ADR
+    # 0005. Esta rota transmite o arquivo do storage e **ocupa um worker
+    # enquanto transmite** (ADR 0003) — o limite existe para conter laço, não
+    # uso, e por isso é o mais folgado dos quatro para pessoa: abrir documento é
+    # o gesto mais frequente da conferência.
+    dependencies=[Depends(limitar(Recurso.DOWNLOAD_ARQUIVO))],
 )
 def obter_arquivo_do_documento(
     documento_id: uuid.UUID,

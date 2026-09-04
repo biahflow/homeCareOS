@@ -613,6 +613,123 @@ a **mesma** validação de força do endpoint de redefinição
 (`SENHA_MINIMA_CARACTERES`): senão o caminho administrativo aceitaria a senha que
 o caminho do usuário recusa.
 
+## Rate limit das rotas caras
+
+Quatro rotas de `/api/*` custam desproporcionalmente mais que as outras 22, e
+uma delas custa **dinheiro**. Desde o
+[ADR 0005](../../docs/adr/0005-rate-limit-das-rotas-caras.md) (issue #39) elas —
+e só elas — têm limite de requisições **por identidade de quem chama**:
+
+| rota | por que entra | pessoa/hora | máquina/hora |
+| --- | --- | :-: | :-: |
+| `POST /api/documentos` | dispara extração por IA **síncrona** dentro da requisição: cada upload é uma chamada paga | 120 | 600 |
+| `GET /api/relatorios/conferencia.csv` | o extrato inteiro do filtro, sem paginação | 20 | 60 |
+| `GET /api/documentos/{id}/arquivo` | streaming que ocupa um worker enquanto transmite (ADR 0003) | 600 | 600 |
+| `POST /api/alertas/varredura` | dispara os detectores e envia WhatsApp de verdade | 30 | 600 |
+
+As demais rotas — as leituras paginadas, com teto de `limite <= 200`, e as
+escritas de uma linha — **continuam sem limite nenhum**, e isso é decisão, não
+pendência: cobrar de 22 rotas baratas o custo de proteger 4 caras é custo certo
+pago contra risco hipotético. Estender o limite depois é barato; desfazer um
+custo já cobrado de todas as rotas não é.
+
+### A chave é a identidade, nunca o IP
+
+O contador é por `usuarios.id` para pessoa e pela chave `maquina:api` para a
+integração autenticada por `X-API-Key`. **Duas conferentes trabalhando lado a
+lado não competem pelo mesmo contador** — que é exatamente o que um limite por
+IP faria: `CONFIAR_EM_X_FORWARDED_FOR` tem default `false` e há proxy em
+produção, então ou todo mundo chega com o IP do balanceador (a primeira pessoa a
+exportar dois relatórios travaria a equipe), ou o header é aceito sem allowlist
+e qualquer cliente forja um IP novo por requisição.
+
+A chave de máquina tem limite próprio e mais folgado: o padrão de uso dela é
+legítimo e repetitivo. **O cron da varredura não é afetado** — ele chama
+`python -m homecareos.alerts.scan` (o módulo, via
+`docker compose run --rm api-alertas`), que não faz requisição HTTP nenhuma. O
+limite folgado da máquina existe porque nada garante que alguém não tenha
+apontado um agendador para a rota.
+
+### O 429
+
+Estourou, a resposta é **429 com `Retry-After` em segundos**, no envelope de
+erro padrão. Duas diferenças em relação ao 429 do login:
+
+- **a mensagem diz qual recurso foi limitado.** O 429 do login é genérico de
+  propósito, para não virar oráculo de "esta conta existe"; aqui quem chegou já
+  está autenticado como si mesmo, e esconder qual limite estourou só atrapalha
+  quem precisa se corrigir;
+- **o `Retry-After` é calculado**, não fixo: é a janela menos a idade do consumo
+  mais antigo dentro dela — o instante em que a cota de fato volta. Um valor
+  inflado ensina a pessoa a ignorar o header.
+
+A requisição bloqueada **não** executa o trabalho caro: o freio é uma dependency
+que roda antes do handler. Um 403 por papel também não consome cota — a
+autorização é avaliada antes.
+
+### O consumo é registrado antes de executar, e é escolha consciente
+
+Uma requisição que depois falhe na validação (um upload com tipo de arquivo
+inválido, por exemplo) terá consumido cota sem ter custado a chamada de IA. É o
+lado conservador do erro: registrar só no sucesso deixaria um laço de
+requisições inválidas passar livre — e é justamente o laço que se quer conter.
+
+### Configuração
+
+Uma variável por recurso e por tipo de principal, com janela de **1 hora** para
+os quatro (constante em `limites/protecao.JANELA`, como as outras duas janelas
+de uma hora do projeto):
+
+```bash
+LIMITE_UPLOAD_DOCUMENTO_PESSOA_POR_HORA=120
+LIMITE_UPLOAD_DOCUMENTO_MAQUINA_POR_HORA=600
+LIMITE_RELATORIO_CSV_PESSOA_POR_HORA=20
+LIMITE_RELATORIO_CSV_MAQUINA_POR_HORA=60
+LIMITE_DOWNLOAD_ARQUIVO_PESSOA_POR_HORA=600
+LIMITE_DOWNLOAD_ARQUIVO_MAQUINA_POR_HORA=600
+LIMITE_VARREDURA_ALERTAS_PESSOA_POR_HORA=30
+LIMITE_VARREDURA_ALERTAS_MAQUINA_POR_HORA=600
+```
+
+**Os oito números são ASSUNÇÃO deste time, não requisito medido**, e o ADR
+registra o porquê: calibrar sem medir uso real produz número inventado com cara
+de decisão. Eles nascem folgados de propósito — uma conferente processando sem
+parar não passa de algumas dezenas de uploads por hora, e o download é o gesto
+mais frequente da conferência (o limite dele existe para conter laço, não uso).
+**A primeira calibragem precisa olhar dado de uso real**, e o pior desfecho de
+um limite mal posto não é o abuso que passa: é uma conferente bloqueada no meio
+do turno, que não abre chamado dizendo "recebi 429" e sim que o sistema parou.
+
+### Onde o contador vive
+
+Numa tabela nova, `consumos_rate_limit`, com **uma linha por consumo** e
+contagem por `COUNT` sobre a janela — mesmo desenho de `tentativas_login`. A
+tabela guarda só `chave`, `recurso` e `created_at`: nenhum e-mail, nenhum token,
+nenhuma chave de API.
+
+No Postgres e não em memória do processo, e a razão é o modo de falha: a API
+sobe hoje como processo uvicorn único, e um contador em memória funcionaria —
+mas nada no repositório documenta quantas instâncias rodam em produção, e no dia
+em que alguém acrescentar uma réplica o contador em memória **dobra o limite em
+silêncio**, sem erro e sem teste vermelho. Redis é a resposta tecnicamente
+certa e foi descartada **por ora** (dependência de infraestrutura nova, custo
+permanente cobrado agora): quando a API passar a rodar em mais de uma instância,
+o ADR 0005 deve ser substituído, não remendado.
+
+**Isto não é proteção contra DDoS** e não deve ser vendido como tal. Ataque
+volumétrico chega antes da aplicação e é trabalho da borda (proxy, CDN, WAF),
+que este repositório não descreve. O que este freio contém é abuso de uso
+legítimo: script mal escrito, integração em laço, curiosidade cara.
+
+**`consumos_rate_limit` ainda não tem retenção, e precisa ter.** A tabela cresce
+a cada consumo das quatro rotas limitadas, e entra na política de "Retenção e
+expurgo de dados" (abaixo) como uma quinta entrada — com a ressalva que vale
+para toda tabela lida por um freio: a janela de uma hora deste limite
+(`limites/protecao.JANELA`) é janela de segurança ativa, e um expurgo que apague
+dentro dela **devolve cota a quem acabou de estourar o limite**. É a mesma trava
+que protege `tentativas_login` de ser expurgada dentro da janela do freio de
+login. Até essa ligação existir, ninguém apaga essas linhas.
+
 ## Retenção e expurgo de dados
 
 Três tabelas crescem para sempre e não são só log — `tentativas_login`,
@@ -724,9 +841,14 @@ Esta entrega **não** tem, e é deliberado — cada um destes itens é decisão 
 produto/segurança que merece a sua própria issue, e uma versão frouxa seria pior
 que a ausência:
 
-- **sem rate limit geral da API**: o freio da issue #33 cobre só
-  `POST /api/auth/login` (ver "Bloqueio por tentativa de login" acima); as
-  demais rotas de `/api/*` não têm limite de requisições;
+- **sem rate limit geral da API**: existem dois freios, e nenhum deles cobre
+  `/api/*` inteiro. O da issue #33 cobre as quatro rotas do fluxo de
+  autenticação (ver "Bloqueio por tentativa de login" acima) e o do ADR 0005
+  cobre as quatro rotas caras, por identidade (ver "Rate limit das rotas caras"
+  acima). As demais rotas — leituras paginadas com teto de `limite <= 200` e
+  escritas de uma linha — continuam sem limite de requisições, **por decisão**:
+  cobrar de todas o custo de proteger quatro seria custo certo contra risco
+  hipotético. Nenhum dos dois é proteção contra DDoS;
 - **recuperação de senha só com SMTP configurado**: ela existe desde a issue #34
   (ver "Recuperação de senha por e-mail" acima), mas sem `SMTP_HOST`/
   `SMTP_REMETENTE` fica desligada e o caminho volta a ser o CLI;
