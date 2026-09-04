@@ -1,0 +1,37 @@
+# Contexto de build do frontend (apps/web/Dockerfile roda com a raiz do repo
+# como contexto, porque o app é parte de um workspace npm). Sem este arquivo o
+# daemon recebe ~1 GB a cada build, quase tudo reconstruível.
+
+# Dependências: o Dockerfile roda `npm ci` a partir do lockfile.
+node_modules/
+**/node_modules/
+
+# Saída de build local. A imagem roda o seu próprio `npm run build`, e o
+# `.next` da máquina só atrapalharia — é de outra plataforma e outro momento.
+.next/
+**/.next/
+next-env.d.ts
+*.tsbuildinfo
+
+# Ambiente e caches do Python: não entram no contexto do frontend.
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+.mypy_cache/
+**/.mypy_cache/
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+
+# Segredos e estado local — `.env` nunca entra em imagem.
+.env
+.git/
+.github/
+.claude/
+
+# Documentação e artefatos que não afetam o build.
+docs/
+*.md
+!README.md

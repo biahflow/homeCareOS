@@ -20,9 +20,9 @@ curl -f localhost:8001/health
 # front em http://localhost:3001
 ```
 
-O `up` inclui o build do frontend, que na primeira vez leva ~3 minutos (medido:
-3min24s). Para trabalhar só no backend, `docker compose up -d api` sobe a API
-com Postgres e MinIO e pula essa espera.
+O `up` inclui o build do frontend, que na primeira vez leva menos de um minuto
+(medido: 43s). Para trabalhar só no backend, `docker compose up -d api` sobe a
+API com Postgres e MinIO e pula essa espera.
 
 Se `pyproject.toml`/`uv.lock` mudar (dependência nova), é preciso rebuild antes
 do próximo `up`/`run`:
