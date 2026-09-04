@@ -46,6 +46,17 @@ const FORMATO_HORAS = new Intl.NumberFormat("pt-BR", {
   maximumFractionDigits: 2,
 });
 
+/**
+ * `variacao_pontos_percentuais` já vem multiplicada por 100 pela API
+ * (`(final - inicial) * 100`) — é diferença de pontos percentuais, não uma
+ * razão 0..1. Por isso não passa por `FORMATO_PERCENTUAL`: seria multiplicar
+ * por 100 de novo.
+ */
+const FORMATO_PONTOS = new Intl.NumberFormat("pt-BR", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 2,
+});
+
 const FORMATO_REAIS = new Intl.NumberFormat("pt-BR", {
   style: "currency",
   currency: "BRL",
@@ -98,6 +109,16 @@ export function formatarInteiro(valor: number): string {
 
 export function formatarHoras(horas: number): string {
   return `${FORMATO_HORAS.format(horas)} h`;
+}
+
+/**
+ * Magnitude de `variacao_pontos_percentuais`, em pontos percentuais — sem
+ * sinal. O sinal é da API (negativo é queda de glosa, ou seja, melhora; ver
+ * `PainelComparacaoGlosa`) e cabe a quem chama decidir o rótulo ("queda de" /
+ * "alta de"), não a este formatador.
+ */
+export function formatarPontosPercentuais(valor: number): string {
+  return `${FORMATO_PONTOS.format(Math.abs(valor))} p.p.`;
 }
 
 /**
