@@ -1,8 +1,14 @@
-"""`GET /api/documentos`, `GET /api/documentos/{id}` e `POST .../revalidar`.
+"""`GET /api/documentos`, `GET /api/documentos/{id}`, `.../arquivo` e `.../revalidar`.
 
 `POST /api/documentos` **não** mora aqui — continua em
 `homecareos.intake.router`, que esta trilha não toca (é o contrato já
 consumido pelo frontend).
+
+`GET /api/documentos/{id}/arquivo` (issue #51) serve a página escaneada pela
+própria API, em streaming, em vez de devolver uma URL assinada do storage. O
+porquê está no ADR 0003 — em resumo: o presigned do MinIO aponta para a rede
+interna do Compose, o do storage local devolve `file://`, e streaming mantém o
+prontuário atrás da autorização que este router já aplica.
 
 A revalidação é o único endpoint daqui que escreve: ela reaplica as regras
 ativas sobre a última extração já existente e reclassifica o documento. Toda a
@@ -18,12 +24,15 @@ chave, e forjar uma faria a auditoria mentir.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -53,7 +62,17 @@ from homecareos.db.models import (
 )
 from homecareos.db.session import get_session
 
+# A montagem do storage vive em `intake.router` desde que ela existe, e é ela
+# que os testes substituem. Importar de lá (em vez de declarar outra fábrica
+# aqui) mantém **um** ponto de configuração e **um** ponto de override: dois
+# provedores para o mesmo recurso significariam um teste trocando o storage do
+# upload e não o da leitura.
+from homecareos.intake.router import get_document_storage
+from homecareos.storage import DocumentStorage, ObjectNotFoundError, content_type_for_key
+
 router = APIRouter(prefix="/api/documentos", tags=["documentos"])
+
+_CARACTERES_PROIBIDOS_NO_NOME = re.compile(r"[^A-Za-z0-9._-]")
 
 
 class DocumentoListItem(BaseModel):
@@ -95,9 +114,26 @@ class ValidacaoResumo(BaseModel):
 
 
 class DocumentoDetalhe(DocumentoListItem):
-    """Detalhe de um documento: os campos da listagem, mais extração e validações."""
+    """Detalhe de um documento: os campos da listagem, mais extração e validações.
 
-    arquivo_url: str
+    `arquivo_url` mantém o nome apesar de ser uma **chave**, e isso é decisão
+    consciente desta entrega (issue #51), não descuido: renomear um campo de
+    resposta é quebra de contrato, e o contrato tipado (`packages/contracts`) e
+    a tela que o consome (`apps/web`) estão fora do escopo desta tarefa. Um
+    rename só na API deixaria o TypeScript declarando um campo que a API parou
+    de mandar — quebra silenciosa, do tipo que só aparece como `undefined` na
+    tela. O nome mentiroso é neutralizado aqui pela descrição do campo (que sai
+    no OpenAPI) e, sobretudo, por `GET /api/documentos/{id}/arquivo`: quem quer
+    ver o documento não precisa mais tocar nesta chave.
+    """
+
+    arquivo_url: str = Field(
+        description=(
+            "Chave do objeto no storage (`documentos/{id}/{sha256}.png`), **não** "
+            "uma URL: não é acessível pelo navegador. Para ver o documento, use "
+            "`GET /api/documentos/{id}/arquivo`."
+        )
+    )
     extracao: ExtracaoResumo | None
     validacoes: list[ValidacaoResumo]
 
@@ -179,6 +215,101 @@ def obter_documento(
         arquivo_url=documento.arquivo_url,
         extracao=ExtracaoResumo.model_validate(extracao) if extracao is not None else None,
         validacoes=[ValidacaoResumo.model_validate(validacao) for validacao in validacoes],
+    )
+
+
+def _nome_para_download(documento: Documento) -> str:
+    """Nome de arquivo legível para quem confere: `evolucao-2026-08-pagina-3.png`.
+
+    Montado a partir do documento, e não da chave do storage: a chave é
+    `documentos/{uuid}/{sha256}.png`, que não diz nada a ninguém e ainda
+    exporia identificador interno num diálogo de "salvar como".
+
+    O resultado é filtrado para `[A-Za-z0-9._-]`. `competencia` é texto que
+    entrou pela API no upload, e nome de arquivo vai para dentro de um header:
+    aspas e quebra de linha aqui seriam injeção de cabeçalho, não estética.
+    """
+    partes = [documento.tipo.value, documento.competencia]
+    if documento.pagina is not None:
+        partes.append(f"pagina-{documento.pagina}")
+    extensao = PurePosixPath(documento.arquivo_url).suffix
+    return _CARACTERES_PROIBIDOS_NO_NOME.sub("-", f"{'-'.join(partes)}{extensao}")
+
+
+@router.get(
+    "/{documento_id}/arquivo",
+    response_class=StreamingResponse,
+    summary="Serve o documento escaneado para conferência visual",
+    description=(
+        "Transmite o arquivo original da página pela própria API, com "
+        "`Content-Disposition: inline` — quem confere compara o que a extração "
+        "leu com o que está no papel, sem baixar nada. Responde 404 tanto para "
+        "documento inexistente quanto para documento cujo arquivo não está mais "
+        "no storage."
+    ),
+    responses={
+        404: {"description": "Documento inexistente, ou arquivo ausente no storage"},
+        503: {"description": "Storage de documentos indisponível"},
+    },
+    # Sem `dependencies=` própria: ler documento é dos três papéis, que é
+    # exatamente a regra que o `include_router` de `main.py` já aplica a este
+    # router. A exceção consciente daqui é a revalidação, mais abaixo.
+)
+def obter_arquivo_do_documento(
+    documento_id: uuid.UUID,
+    session: Annotated[Session, Depends(get_session)],
+    storage: Annotated[DocumentStorage, Depends(get_document_storage)],
+) -> StreamingResponse:
+    """Serve os bytes da página escaneada, em blocos, sem carregá-la na memória.
+
+    Duas armadilhas moram neste handler, e as duas são de tempo:
+
+    **A sessão do banco acaba antes do corpo.** `Depends(get_session)` fecha a
+    sessão quando o handler retorna, e o corpo de um `StreamingResponse` só é
+    transmitido depois disso — a mesma coisa que a docstring de
+    `reports.router._stream_csv` documenta. Por isso tudo o que vem do
+    `Documento` (chave, content type, nome) é lido **agora**, para locais, e o
+    iterador entregue à resposta não toca no ORM.
+
+    **O status é escolhido antes do primeiro byte.** Chave ausente no storage
+    precisa virar 404, e não dá para trocar o status depois que a transmissão
+    começou; é por isso que `storage.get` procura o objeto na chamada, e não na
+    primeira iteração (ver o Protocol em `homecareos.storage`).
+
+    Nada aqui é logado: a chave identifica o objeto de prontuário no bucket e o
+    conteúdo é o prontuário.
+    """
+    documento = session.get(Documento, documento_id)
+    if documento is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="documento não encontrado"
+        )
+
+    chave = documento.arquivo_url
+    content_type = content_type_for_key(chave)
+    nome = _nome_para_download(documento)
+
+    try:
+        blocos = storage.get(chave)
+    except ObjectNotFoundError as exc:
+        # 404, e não 500: o documento existe, o arquivo dele é que não está no
+        # storage. Quem confere precisa ler "o arquivo não está lá" e abrir
+        # chamado, não um erro genérico que parece defeito da aplicação.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="arquivo do documento não encontrado no storage",
+        ) from exc
+    # `StorageError` (storage fora do ar, sem permissão) sobe e vira 503 no
+    # handler global de `api/errors.py` — é falha de infraestrutura, não
+    # documento ausente, e os dois casos não podem responder a mesma coisa.
+
+    return StreamingResponse(
+        blocos,
+        media_type=content_type,
+        # `inline`, não `attachment`: a conferência é olhar o documento ao lado
+        # do que a extração leu. `attachment` obrigaria a baixar e abrir fora
+        # do sistema a cada documento conferido.
+        headers={"Content-Disposition": f'inline; filename="{nome}"'},
     )
 
 

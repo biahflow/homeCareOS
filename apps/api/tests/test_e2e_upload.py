@@ -154,6 +154,9 @@ class StorageQueAnota:
         self.gravadas.append(key)
         return self.interno.put(key, data, content_type)
 
+    def get(self, key: str) -> Iterator[bytes]:
+        return self.interno.get(key)
+
     def presigned_url(self, key: str, expires_in: int = 3600) -> str:
         return self.interno.presigned_url(key, expires_in)
 
