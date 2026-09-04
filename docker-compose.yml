@@ -140,6 +140,30 @@ services:
       postgres:
         condition: service_healthy
 
+  # Expurgo por retenção de tentativas_login, tokens_recuperacao e
+  # alertas_enviados (issue #39). Fica em `profiles: ["tools"]` como as demais
+  # ferramentas: em produção quem a chama é um cron (`docker compose run --rm
+  # api-retencao ...`), não o `up`. O comando default roda em dry-run (não
+  # apaga nada); apagar de verdade exige sobrescrever o command com
+  # `--executar` — ver "Retenção e expurgo de dados" no README de apps/api.
+  api-retencao:
+    build:
+      context: ./apps/api
+    profiles: ["tools"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://homecareos:homecareos@postgres:5432/homecareos
+      PYTHONPATH: /app/src
+    volumes:
+      - ./apps/api/src:/app/src
+      - ./apps/api/uv.lock:/app/uv.lock:ro
+    command: python -m homecareos.retencao.cli
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Frontend Next.js. A URL da API é configuração de **runtime do servidor**
   # (`API_URL`), não argumento de build: com o proxy do ADR 0002 quem chama a
   # API é o servidor do Next, e o navegador só fala com a origem do próprio

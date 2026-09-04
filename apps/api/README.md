@@ -232,10 +232,10 @@ pelo mesmo motivo do 401 do login.
 
 Duas notas honestas:
 
-- **`tentativas_login` cresce a cada tentativa de login, sucesso ou falha, e
-  não há expurgo automático nesta entrega.** `auth/protecao.limpar_tentativas_antigas`
-  existe e apaga linhas antigas, mas não há agendador que a chame — é operação
-  manual (ou de um cron futuro) até essa issue existir.
+- **`tentativas_login` cresce a cada tentativa de login, sucesso ou falha.**
+  O expurgo por retenção existe desde a issue #39 — ver "Retenção e expurgo de
+  dados" abaixo —, mas ninguém o chama sozinho: não há agendador embutido, e
+  ligar o cron (`api-retencao`) em produção é decisão de operação.
 - **`CONFIAR_EM_X_FORWARDED_FOR` precisa ser ligado em deploy atrás de proxy.**
   Sem isso, `request.client.host` é o IP do balanceador para toda requisição,
   e a trava de IP trava o mundo inteiro de uma vez na primeira sondagem —
@@ -602,6 +602,111 @@ Papel inválido e e-mail duplicado saem com código 1 e mensagem clara. O CLI us
 a **mesma** validação de força do endpoint de redefinição
 (`SENHA_MINIMA_CARACTERES`): senão o caminho administrativo aceitaria a senha que
 o caminho do usuário recusa.
+
+## Retenção e expurgo de dados
+
+Três tabelas crescem para sempre e não são só log — `tentativas_login`,
+`tokens_recuperacao` e `alertas_enviados` são consultadas por freios de
+segurança ativos, dentro de janelas de tempo (issue #39). `alertas_enviados`
+tem ainda um motivo de privacidade: `mensagem` guarda o texto exatamente como
+foi enviado, **incluindo o nome do paciente** (ver `db/models/alerta.py`) —
+dado pessoal de saúde retido para sempre não é neutro, é exposição que só
+cresce.
+
+| tabela | quem consulta | janela de segurança | o que quebra se você apagar dentro dela |
+| --- | --- | --- | --- |
+| `tentativas_login` | trava de IP e de conta (`auth/protecao.avaliar_bloqueio`) | `LOGIN_JANELA_MINUTOS` (15 min por padrão) | o contador de falhas cai e o atacante ganha tentativas de volta |
+| `tokens_recuperacao` | teto de emissão (`auth/recuperacao.emissoes_recentes`) | `JANELA_DO_TETO`, 1h, **hardcoded** em `auth/recuperacao.py` | o teto de `SENHA_RESET_MAX_POR_HORA` afrouxa |
+| `alertas_enviados` | cooldown (`alerts/repository.existe_envio_recente`) | `ALERTAS_COOLDOWN_HORAS` (24h por padrão) | o mesmo alerta dispara de novo |
+| `alertas_enviados` | rate limit (`alerts/repository.contar_envios_desde`) | `JANELA_RATE_LIMIT`, 1h, **hardcoded** em `alerts/service.py` | o teto por destinatário afrouxa |
+
+Por isso o expurgo **recusa-se a rodar** quando a retenção configurada for
+menor que **o dobro** da janela de segurança ativa de uma tabela — a janela é
+o piso absoluto; a margem existe porque rodar exatamente nela é apostar
+contra o relógio (job atrasado, retenção configurada minutos acima do
+limite). O erro diz qual janela foi violada e qual o mínimo aceitável, e
+nada é apagado (nem nas outras tabelas da mesma execução).
+
+### Configuração
+
+| variável | default | por quê |
+| --- | --- | --- |
+| `RETENCAO_TENTATIVAS_LOGIN_DIAS` | 180 | registro de acesso à aplicação; 6 meses é o horizonte que o Marco Civil da Internet (Lei 12.965/2014, art. 15) estabelece para provedor de aplicações com fins econômicos |
+| `RETENCAO_TOKENS_RECUPERACAO_DIAS` | 30 | o valor de auditoria é curto; o token em si já morre em `SENHA_RESET_VALIDADE_MINUTOS` (30 min) |
+| `RETENCAO_ALERTAS_ENVIADOS_DIAS` | 90 | `mensagem` contém nome de paciente — reter menos é a decisão mais segura, desde que fique muito acima do cooldown de 24h |
+| `RETENCAO_TAMANHO_LOTE` | 1000 | tamanho do lote de apagar, com commit por lote |
+
+**Os três defaults de dias são uma assunção deste time, não um requisito
+confirmado pelo cliente ou pelo jurídico** — precisam de confirmação antes de
+valer como política real de retenção.
+
+### Um token ainda válido nunca é apagado por idade
+
+`tokens_recuperacao` tem uma regra além da idade: um token **ainda válido e
+não usado** (`used_at IS NULL AND expires_at > agora`) nunca é apagado, mesmo
+que `created_at` já tenha passado da retenção configurada — apagar esse token
+quebraria o link que está na caixa de e-mail de alguém, no meio do clique.
+
+### O comando
+
+```bash
+# Conta e reporta, sem apagar nada (padrão — precisa de --executar para valer):
+docker compose run --rm api-retencao
+
+# Apaga de verdade:
+docker compose run --rm api-retencao python -m homecareos.retencao.cli --executar
+
+# Uma tabela só:
+docker compose run --rm api-retencao python -m homecareos.retencao.cli \
+  --tabela alertas_enviados --executar
+```
+
+Sem `--executar` o comando só CONTA e reporta — é o padrão, de propósito: a
+primeira execução contra um banco de produção precisa ser uma decisão
+informada, não um salto no escuro. O resumo em JSON sempre diz
+`"dry_run": true` ou `false` explicitamente, então mesmo um cron que rodasse
+em dry-run por engano é auditável em segundos a partir do próprio log.
+
+O resumo diz, por tabela, quantas linhas saíram (ou sairiam, em dry-run) e
+qual foi a data de corte usada:
+
+```json
+{"dry_run": true, "executado_em": "...", "tabelas": {"tentativas_login": {"apagadas": 42, "corte": "..."}}}
+```
+
+Código de saída `1` quando a retenção viola a janela mínima de alguma tabela
+ou quando um argumento é inválido; `0` em qualquer expurgo bem-sucedido
+(real ou dry-run), mesmo com zero linhas apagadas.
+
+### Em lotes, e por isso não atômico
+
+O expurgo apaga em lotes (`RETENCAO_TAMANHO_LOTE`, commit a cada lote) — um
+`DELETE` único sobre anos de dado acumulado seguraria locks e cresceria o WAL
+de uma vez só, numa tabela (`tentativas_login`) que recebe insert a cada
+login. **Consequência**: a operação inteira não é atômica. Uma interrupção no
+meio deixa parte apagada — para expurgo por idade isso é aceitável, porque a
+próxima execução termina o serviço, mas é bom saber disso antes de perguntar
+por que só apagou metade.
+
+### Ninguém liga o cron automaticamente
+
+Esta entrega **não** inclui agendador nenhum (nem embutido, nem cron dentro
+do container) — mesma decisão de `api-alertas`: em produção quem chama
+`api-retencao` é um cron **externo**, não o `up`. Ligar esse cron em produção
+é decisão de operação, com aprovação humana.
+
+### Follow-ups conhecidos
+
+- **Sem índice líder em `created_at`.** Nenhuma das três tabelas tem
+  `created_at` como coluna líder de índice, então o `DELETE` por data tende a
+  seq scan. Não foi criado índice nesta entrega — indexar antes de medir é
+  otimização prematura para um job de manutenção fora do caminho de request, e
+  todo índice novo custa escrita numa tabela que recebe insert a cada login.
+  Se o expurgo diário demorar demais em regime, medir e considerar índice em
+  `created_at`.
+- **A tabela de auditoria administrativa não tem retenção aqui.** Ela ainda
+  não existia nesta branch quando esta entrega foi feita; quando existir,
+  decidir a política de retenção dela é trabalho à parte.
 
 ### Limitações conhecidas
 

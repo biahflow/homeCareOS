@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from homecareos.alerts.schema import StatusAlerta, TipoAlerta
@@ -119,3 +121,36 @@ def listar(
         ).all()
     )
     return linhas, total
+
+
+def limpar_alertas_antigos(
+    session: Session, *, antes_de: datetime, lote: int = 1000, dry_run: bool = False
+) -> int:
+    """Apaga linhas de `alertas_enviados` com `created_at < antes_de` e devolve
+    quantas saíram (ou sairiam, em `dry_run`). Commita a cada lote de até
+    `lote` linhas — ver `auth/protecao.limpar_tentativas_antigas` para o
+    motivo do lote/commit por lote e do default de `lote`. Ver
+    `retencao/cli.py` (issue #39).
+
+    `mensagem` guarda o texto enviado, incluindo o nome do paciente (ver
+    `db/models/alerta.py`) — dado pessoal de saúde retido para sempre não é
+    neutro, é exposição que só cresce.
+    """
+    condicao = AlertaEnviado.created_at < antes_de
+    if dry_run:
+        total = session.scalar(select(func.count()).select_from(AlertaEnviado).where(condicao))
+        return int(total or 0)
+
+    total = 0
+    while True:
+        subquery = select(AlertaEnviado.id).where(condicao).limit(lote)
+        resultado = cast(
+            "CursorResult[Any]",
+            session.execute(delete(AlertaEnviado).where(AlertaEnviado.id.in_(subquery))),
+        )
+        session.commit()
+        apagadas = resultado.rowcount
+        total += apagadas
+        if apagadas < lote:
+            break
+    return total

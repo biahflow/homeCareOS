@@ -225,18 +225,42 @@ def falhas_recentes(
     )
 
 
-def limpar_tentativas_antigas(session: Session, *, antes_de: datetime) -> int:
-    """Apaga tentativas com `created_at < antes_de` e devolve quantas saíram. Commita.
+def limpar_tentativas_antigas(
+    session: Session, *, antes_de: datetime, lote: int = 1000, dry_run: bool = False
+) -> int:
+    """Apaga tentativas com `created_at < antes_de` e devolve quantas saíram (ou
+    sairiam, em `dry_run`, sem tocar o banco). Commita a cada lote de até
+    `lote` linhas.
 
     Não há agendador nesta issue: esta função existe para ser chamada por um
-    cron futuro (ou manualmente). Sem expurgo, `tentativas_login` cresce a
-    cada tentativa de login, sucesso ou falha — ver o README.
+    cron futuro (ou manualmente) — ver `retencao/cli.py` (issue #39) e o
+    README. `lote=1000` é o mesmo default de `Settings.retencao_tamanho_lote`;
+    existe aqui só para permitir chamar a função sem toda a configuração, como
+    faz o teste existente.
+
+    Um `DELETE` único sobre anos de tentativas acumuladas seguraria locks e
+    cresceria o WAL de uma vez, numa tabela que recebe insert a cada login —
+    daí o lote, com commit a cada um. O preço é que a operação inteira deixa
+    de ser atômica: uma interrupção no meio apaga só parte, e a próxima
+    execução termina o serviço.
     """
-    # `Session.execute` é tipado como `Result[Any]`; em tempo de execução um
-    # `delete()` sempre devolve `CursorResult`, que é quem tem `.rowcount`.
-    resultado = cast(
-        "CursorResult[Any]",
-        session.execute(delete(TentativaLogin).where(TentativaLogin.created_at < antes_de)),
-    )
-    session.commit()
-    return resultado.rowcount
+    condicao = TentativaLogin.created_at < antes_de
+    if dry_run:
+        total = session.scalar(select(func.count()).select_from(TentativaLogin).where(condicao))
+        return total or 0
+
+    total = 0
+    while True:
+        subquery = select(TentativaLogin.id).where(condicao).limit(lote)
+        # `Session.execute` é tipado como `Result[Any]`; em tempo de execução um
+        # `delete()` sempre devolve `CursorResult`, que é quem tem `.rowcount`.
+        resultado = cast(
+            "CursorResult[Any]",
+            session.execute(delete(TentativaLogin).where(TentativaLogin.id.in_(subquery))),
+        )
+        session.commit()
+        apagadas = resultado.rowcount
+        total += apagadas
+        if apagadas < lote:
+            break
+    return total

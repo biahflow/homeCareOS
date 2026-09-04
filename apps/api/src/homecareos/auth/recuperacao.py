@@ -22,8 +22,10 @@ import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, delete, func, not_, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session as DbSession
 
 from homecareos.config import Settings
@@ -150,3 +152,49 @@ def marcar_usado(session: DbSession, token: str, *, agora: datetime) -> None:
     if pedido is None or pedido.used_at is not None:
         return
     pedido.used_at = agora
+
+
+def limpar_tokens_antigos(
+    session: DbSession,
+    *,
+    antes_de: datetime,
+    agora: datetime,
+    lote: int = 1000,
+    dry_run: bool = False,
+) -> int:
+    """Apaga tokens de recuperação com `created_at < antes_de` e devolve quantos
+    saíram (ou sairiam, em `dry_run`). Commita a cada lote de até `lote`
+    linhas — ver `auth/protecao.limpar_tentativas_antigas` para o motivo do
+    lote/commit por lote e do default de `lote`. Ver `retencao/cli.py`
+    (issue #39).
+
+    **Nunca apaga um token ainda válido e não usado**
+    (`used_at IS NULL AND expires_at > agora`), mesmo que `created_at` já
+    tenha passado do corte de idade: apagar esse token quebraria o link que
+    está na caixa de e-mail de alguém, no meio do clique. Na prática a
+    colisão é improvável — o token vale `senha_reset_validade_minutos` (30 min
+    por padrão) contra uma retenção de dias —, mas "improvável" não é
+    "impossível", e a condição custa uma cláusula no `WHERE`.
+    """
+    ainda_valido_e_nao_usado = and_(
+        TokenRecuperacao.used_at.is_(None), TokenRecuperacao.expires_at > agora
+    )
+    condicao = and_(TokenRecuperacao.created_at < antes_de, not_(ainda_valido_e_nao_usado))
+
+    if dry_run:
+        total = session.scalar(select(func.count()).select_from(TokenRecuperacao).where(condicao))
+        return int(total or 0)
+
+    total = 0
+    while True:
+        subquery = select(TokenRecuperacao.id).where(condicao).limit(lote)
+        resultado = cast(
+            "CursorResult[Any]",
+            session.execute(delete(TokenRecuperacao).where(TokenRecuperacao.id.in_(subquery))),
+        )
+        session.commit()
+        apagadas = resultado.rowcount
+        total += apagadas
+        if apagadas < lote:
+            break
+    return total

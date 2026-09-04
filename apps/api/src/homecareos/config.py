@@ -155,6 +155,32 @@ class Settings(BaseSettings):
     # além da varredura periódica.
     alertas_hook_inline_habilitado: bool = True
 
+    # Retenção e expurgo de dados (issue #39). `tentativas_login`,
+    # `tokens_recuperacao` e `alertas_enviados` crescem sem limite e não são só
+    # log: as três são consultadas por freios de segurança ativos dentro de
+    # janelas de tempo — ver `retencao/janelas.py` e a seção "Retenção e
+    # expurgo de dados" do README. Os três defaults de dias abaixo são
+    # ASSUNÇÃO deste time, não requisito confirmado pelo cliente/jurídico.
+    #
+    # Registro de acesso à aplicação; 180 dias (~6 meses) é o horizonte que o
+    # Marco Civil da Internet (Lei 12.965/2014, art. 15) estabelece para
+    # provedor de aplicações com fins econômicos.
+    retencao_tentativas_login_dias: int = 180
+    # O valor de auditoria é curto ("pediram redefinição da minha senha semana
+    # passada?"); o token em si já morre em `senha_reset_validade_minutos`
+    # (30 min). Um token ainda válido e não usado nunca é apagado por idade.
+    retencao_tokens_recuperacao_dias: int = 30
+    # `mensagem` guarda o texto enviado, incluindo o nome do paciente (ver
+    # `db/models/alerta.py`) — aqui a LGPD empurra para reter MENOS, desde que
+    # fique muito acima do cooldown de 24h (`alertas_cooldown_horas`).
+    retencao_alertas_enviados_dias: int = 90
+    # Tamanho do lote de apagar por vez, com commit a cada lote (ver
+    # `auth/protecao.limpar_tentativas_antigas`). 1000: grande o bastante para
+    # não multiplicar round-trips numa tabela com anos de atraso acumulado,
+    # pequeno o bastante para não segurar lock nem crescer o WAL de um jeito
+    # perceptível numa tabela que recebe insert a cada login.
+    retencao_tamanho_lote: int = 1000
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
