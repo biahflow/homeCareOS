@@ -35,6 +35,8 @@ from fastapi import (
 )
 from sqlalchemy.orm import Session
 
+from homecareos.auth.dependencies import principal_atual
+from homecareos.auth.schema import Principal
 from homecareos.config import Settings, get_settings
 from homecareos.db.session import get_session
 from homecareos.extraction.dispatcher import build_sync_dispatcher
@@ -84,6 +86,7 @@ def criar_documentos(
     storage: Annotated[DocumentStorage, Depends(get_document_storage)],
     dispatcher: Annotated[ExtractionDispatcher, Depends(get_extraction_dispatcher)],
     settings: Annotated[Settings, Depends(get_settings)],
+    principal: Annotated[Principal, Depends(principal_atual)],
     arquivo: Annotated[UploadFile, File(description="PDF, JPEG ou PNG da evolução")],
     competencia: Annotated[str, Form(description="Competência do faturamento, `YYYY-MM`")],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
@@ -132,6 +135,8 @@ def criar_documentos(
             repository=repository,
             storage=storage,
             dispatcher=dispatcher,
+            usuario=principal.rotulo,
+            usuario_id=principal.usuario_id,
         )
     except UploadTooLargeError as exc:
         raise HTTPException(

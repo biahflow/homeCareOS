@@ -23,8 +23,23 @@ from homecareos.intake.pdf import PageImage
 class ExtractionDispatcher(Protocol):
     """Porta: entrega uma página já persistida para extração."""
 
-    def dispatch(self, documento_id: uuid.UUID, pagina: PageImage) -> None:
+    def dispatch(
+        self,
+        documento_id: uuid.UUID,
+        pagina: PageImage,
+        *,
+        usuario: str = "sistema",
+        usuario_id: uuid.UUID | None = None,
+    ) -> None:
         """Dispara a extração da página do documento `documento_id`.
+
+        `usuario`/`usuario_id` identificam quem originou o upload (issue #30)
+        e chegam até `log_conferencia` na classificação automática — dados
+        simples, não o `Principal` inteiro nem a sessão do request, porque o
+        dispatcher abre sessão própria e pode um dia rodar em segundo plano,
+        fora do ciclo de vida da requisição. O default `"sistema"`/`None` é o
+        que mantém cron, script e chamada sem autor funcionando sem inventar
+        pessoa nenhuma.
 
         Pode levantar exceção: o chamador (o serviço de intake) trata a falha
         sem desfazer o documento já commitado.
@@ -35,5 +50,12 @@ class ExtractionDispatcher(Protocol):
 class NullExtractionDispatcher:
     """Não dispara nada. Útil para desligar a extração sem mexer no intake."""
 
-    def dispatch(self, documento_id: uuid.UUID, pagina: PageImage) -> None:
+    def dispatch(
+        self,
+        documento_id: uuid.UUID,
+        pagina: PageImage,
+        *,
+        usuario: str = "sistema",
+        usuario_id: uuid.UUID | None = None,
+    ) -> None:
         return None

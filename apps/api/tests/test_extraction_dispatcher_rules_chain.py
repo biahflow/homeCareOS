@@ -26,6 +26,7 @@ import pytest
 from sqlalchemy import Connection, select
 from sqlalchemy.orm import Session
 
+from homecareos.auth import senhas
 from homecareos.db.models import (
     Documento,
     LogConferencia,
@@ -34,6 +35,7 @@ from homecareos.db.models import (
     PendenciaStatus,
     Regra,
     TipoDocumento,
+    Usuario,
     Validacao,
 )
 from homecareos.db.models.enums import DocumentoStatus, ResultadoValidacao
@@ -230,6 +232,66 @@ def test_dispatch_classifica_documento_e_abre_pendencia(db_connection: Connectio
         )
     ]
     assert acoes == ["transicao:processando->incompleto"]
+
+
+# --- issue #30: identidade real na auditoria do upload -------------------------
+
+
+def test_dispatch_sem_autor_grava_log_com_sistema_e_usuario_id_nulo(
+    db_connection: Connection,
+) -> None:
+    """O default importa: sem autor (cron, script, chamada antiga), a
+    classificação continua atribuindo a `"sistema"`, nunca inventando pessoa."""
+    documento_id, _ = _cenario_com_regra(db_connection, acao="rejeitar")
+    dispatcher = SyncExtractionDispatcher(
+        provider=_FakeProvider(resultado=_fake_resultado()),
+        session_factory=_session_factory(db_connection),
+    )
+
+    dispatcher.dispatch(documento_id, _pagina())
+
+    session_assert = Session(bind=db_connection, join_transaction_mode="create_savepoint")
+    (log,) = list(
+        session_assert.scalars(
+            select(LogConferencia).where(LogConferencia.documento_id == documento_id)
+        )
+    )
+    assert log.usuario == "sistema"
+    assert log.usuario_id is None
+
+
+def test_dispatch_com_autor_grava_log_com_usuario_e_usuario_id_da_pessoa(
+    db_connection: Connection,
+) -> None:
+    """A identidade de quem originou o upload chega até `log_conferencia`."""
+    documento_id, _ = _cenario_com_regra(db_connection, acao="rejeitar")
+    # `log_conferencia.usuario_id` tem FK para `usuarios`: precisa de uma linha
+    # de verdade, não de um UUID solto.
+    session_setup = Session(bind=db_connection, join_transaction_mode="create_savepoint")
+    usuario = Usuario(
+        nome="Ana Souza",
+        email=f"ana-{uuid.uuid4()}@exemplo.com",
+        senha_hash=senhas.gerar_hash("senha-de-teste-dispatch"),
+        papel="conferente",
+    )
+    session_setup.add(usuario)
+    session_setup.commit()
+
+    dispatcher = SyncExtractionDispatcher(
+        provider=_FakeProvider(resultado=_fake_resultado()),
+        session_factory=_session_factory(db_connection),
+    )
+
+    dispatcher.dispatch(documento_id, _pagina(), usuario=usuario.email, usuario_id=usuario.id)
+
+    session_assert = Session(bind=db_connection, join_transaction_mode="create_savepoint")
+    (log,) = list(
+        session_assert.scalars(
+            select(LogConferencia).where(LogConferencia.documento_id == documento_id)
+        )
+    )
+    assert log.usuario == usuario.email
+    assert log.usuario_id == usuario.id
 
 
 def test_dispatch_aprova_documento_que_passa_nas_regras(db_connection: Connection) -> None:

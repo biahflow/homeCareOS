@@ -38,14 +38,37 @@ class SyncExtractionDispatcher:
     provider: ExtractionProvider
     session_factory: Callable[[], Session]
 
-    def dispatch(self, documento_id: uuid.UUID, pagina: PaginaDocumento) -> None:
+    def dispatch(
+        self,
+        documento_id: uuid.UUID,
+        pagina: PaginaDocumento,
+        *,
+        usuario: str = "sistema",
+        usuario_id: uuid.UUID | None = None,
+    ) -> None:
+        """Extrai a página e encadeia regras/classificação.
+
+        `usuario`/`usuario_id` identificam quem originou o trabalho (issue
+        #30) e chegam até `log_conferencia` via `classificar_documento`. O
+        default `"sistema"`/`None` é o que mantém cron, script e chamada de
+        teste antiga funcionando sem inventar uma pessoa por trás da ação —
+        nunca falha, nunca atribui a ação a alguém que não a fez.
+        """
         resultado = self.provider.extract(pagina, str(documento_id))
         with self.session_factory() as session:
             registrar_extracao(session, documento_id, resultado)
-            self._validar_contra_regras(session, documento_id, resultado.campos)
+            self._validar_contra_regras(
+                session, documento_id, resultado.campos, usuario=usuario, usuario_id=usuario_id
+            )
 
     def _validar_contra_regras(
-        self, session: Session, documento_id: uuid.UUID, campos: EvolucaoProntuario
+        self,
+        session: Session,
+        documento_id: uuid.UUID,
+        campos: EvolucaoProntuario,
+        *,
+        usuario: str,
+        usuario_id: uuid.UUID | None,
     ) -> None:
         """Encadeia o motor de regras (issue #5) e a classificação (issue #7).
 
@@ -73,7 +96,9 @@ class SyncExtractionDispatcher:
             return
         resultados = validar(campos, regras, competencia=documento.competencia)
         registrar_validacoes(session, documento_id, resultados)
-        classificar_documento(session, documento_id, resultados, usuario="sistema")
+        classificar_documento(
+            session, documento_id, resultados, usuario=usuario, usuario_id=usuario_id
+        )
 
 
 def build_sync_dispatcher(
