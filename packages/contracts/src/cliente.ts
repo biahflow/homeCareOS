@@ -1,5 +1,6 @@
 import { ApiError } from "./erros";
 import type {
+  EsqueciSenhaParams,
   EuResposta,
   LoginParams,
   LoginResposta,
@@ -8,6 +9,7 @@ import type {
   MfaDesativarParams,
   MfaIniciarOut,
   MfaVerificarParams,
+  RedefinirSenhaParams,
   UploadParams,
   UploadResponse,
   UsuarioOut,
@@ -281,4 +283,53 @@ export async function obterUsuarioAtual(
     opcoes,
   );
   return (await response.json()) as EuResposta;
+}
+
+/**
+ * `POST /api/auth/senha/esqueci`: pede o link de redefinição por e-mail.
+ *
+ * **Responde 204 sempre**, e é o contrato — não uma simplificação. E-mail
+ * cadastrado, inexistente, de conta desativada, com teto de envios já
+ * atingido na hora, ou com o SMTP desligado neste ambiente: todos voltam com
+ * o mesmo 204 vazio (`auth/router.py:esqueci_senha`). Não existe leitura da
+ * resposta que diga qual foi o caso — quem chama não deve tentar, e a tela
+ * que consome isto precisa mostrar a mesma mensagem para qualquer e-mail
+ * digitado, existente ou não.
+ */
+export async function esqueciSenha(baseUrl: string, params: EsqueciSenhaParams): Promise<void> {
+  await requisitar(baseUrl, "/api/auth/senha/esqueci", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+}
+
+/**
+ * `POST /api/auth/senha/redefinir`: troca a senha usando o token de uso único
+ * recebido por e-mail.
+ *
+ * Sucesso (204) revoga **todas** as sessões do usuário — inclusive a que fez
+ * esta chamada. Não há sessão para manter depois disto; quem trata o sucesso
+ * deve mandar a pessoa para `/login`, não tentar preservar estado de sessão.
+ *
+ * **Os dois 422 são indistinguíveis para quem chama.** O `tipo` do envelope
+ * de erro vem do status HTTP (`api/errors.py:_tipo_do_status`), não da causa:
+ * token inexistente/expirado/já usado e senha fraca chegam aqui como o mesmo
+ * {@link ApiError} com `status: 422` — só a `message` (texto que a própria
+ * API escreveu) diz qual foi. A diferença importa: com senha fraca o token
+ * **continua válido**, porque a validação de força roda antes de marcar o
+ * token como usado (`auth/recuperacao.py`, docstring do módulo); com token
+ * inválido, uma nova tentativa não adianta. Quem trata não deve classificar a
+ * causa pelo texto — só exibir `erro.message` e manter o formulário
+ * utilizável para uma segunda tentativa.
+ */
+export async function redefinirSenha(
+  baseUrl: string,
+  params: RedefinirSenhaParams,
+): Promise<void> {
+  await requisitar(baseUrl, "/api/auth/senha/redefinir", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
 }
