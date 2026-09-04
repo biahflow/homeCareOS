@@ -306,12 +306,29 @@ def test_chave_de_maquina_tem_contador_proprio_e_separado(
 
     A pessoa estoura no primeiro consumo; a máquina, com limite mais folgado,
     continua passando — são duas chaves diferentes na mesma tabela.
+
+    **O limite da máquina é relativo ao que já foi consumido, e isso não é
+    detalhe de teste.** `maquina:api` é uma chave global: qualquer outra suíte
+    que chame uma rota limitada com `X-API-Key` — `test_api_relatorios.py` faz
+    isso — deixa consumo nela, e o teardown de cada teste só apaga o que ele
+    mesmo criou (apagar por chave levaria junto o de outro teste rodando em
+    paralelo). Com um teto absoluto, este teste passava numa base limpa e
+    falhava a partir da segunda rodada da suíte dentro da mesma janela de uma
+    hora — verde no CI, que sobe Postgres novo, e vermelho na máquina de quem
+    desenvolve, que é o pior tipo de teste intermitente: some quando se procura.
     """
     marco = datetime.now(UTC)
+    ja_consumidos = len(
+        [
+            consumo
+            for consumo in _consumos(sessao, CHAVE_MAQUINA, Recurso.RELATORIO_CSV)
+            if consumo.created_at >= marco - JANELA
+        ]
+    )
     _aplicar_settings(
         settings,
         limite_relatorio_csv_pessoa_por_hora=1,
-        limite_relatorio_csv_maquina_por_hora=5,
+        limite_relatorio_csv_maquina_por_hora=ja_consumidos + 5,
     )
     cliente = _logar(usuario)
 
