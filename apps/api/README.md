@@ -330,6 +330,7 @@ uma etapa, com o comportamento de sempre.
 | `POST /api/auth/mfa/iniciar` | — | `{"secret": "...", "otpauth_uri": "otpauth://totp/..."}` |
 | `POST /api/auth/mfa/confirmar` | `{"codigo": "123456"}` | `{"codigos": ["a1b2c-3d4e5", ...]}` |
 | `POST /api/auth/mfa/desativar` | `{"senha": "...", "codigo": "123456"}` | 204 |
+| `POST /api/auth/mfa/reemitir-codigos` | `{"senha": "...", "codigo": "123456"}` | `{"codigos": ["a1b2c-3d4e5", ...]}` |
 
 `/mfa/iniciar` grava o segredo **sem ativar nada**: um segredo que o app não
 guardou (QR code fechado antes da hora, celular sem bateria) não pode passar a
@@ -339,16 +340,55 @@ confirmado não protege nada. Com MFA já ativado, responde 409.
 
 `/mfa/confirmar` é o que ativa, e só com a prova de que o app guardou o segredo.
 Ele devolve os **códigos de recuperação** (`MFA_CODIGOS_RECUPERACAO`, 8) — a
-única vez em que eles existem em claro. O banco guarda só o hash Argon2id: não
-há endpoint que os mostre de novo.
+única vez em que *aqueles* códigos existem em claro. O banco guarda só o hash
+Argon2id: não há endpoint que mostre de novo os códigos de uma emissão.
 
 `/mfa/desativar` exige **senha e código**, os dois. Com só o código, uma sessão
 sequestrada desligaria o segundo fator sozinha, que é exatamente o que ele
 existe para impedir; com só a senha, bastaria a senha vazada, que é a hipótese
 que faz alguém ativar MFA. Senha errada e código errado respondem o mesmo 422.
 
-Os três exigem **sessão de usuário**: requisição por `X-API-Key` responde 403 —
+Os quatro exigem **sessão de usuário**: requisição por `X-API-Key` responde 403 —
 chave de máquina não tem celular nem app autenticador.
+
+#### Reemissão dos códigos de recuperação (issue #39)
+
+`POST /api/auth/mfa/reemitir-codigos` troca a lista inteira por uma nova, **sem
+desativar o segundo fator e sem tocar no segredo TOTP** — o app autenticador
+cadastrado continua valendo, e não há QR code novo para escanear. Antes dela,
+quem perdia a lista tinha um caminho só: desativar e ativar de novo, com segredo
+novo e app reconfigurado. O custo era alto o bastante para a pessoa adiar, e
+adiar significa ficar sem a saída de emergência justamente enquanto o MFA está
+ligado.
+
+**Ela exige senha e código atual, os dois, como `/mfa/desativar`** — e pela mesma
+razão, com um agravante: o que sai daqui é uma lista de credenciais que *pulam*
+o segundo fator no login. Uma sessão sequestrada que pudesse pedir códigos novos
+viraria acesso permanente à conta, imune à troca de senha e ao próprio MFA.
+Senha errada e código errado respondem o **mesmo** 422: duas mensagens diriam a
+quem está com a sessão de outra pessoa qual metade da credencial ele já tem.
+
+O `codigo` é **só** o TOTP do app: código de recuperação não é aceito aqui. Um
+código vazado que gerasse oito novos desfaria o uso único da lista inteira.
+
+**Todos os códigos anteriores morrem, usados e não usados**, no mesmo `delete`
+que precede o `insert` — e na mesma transação, para uma falha no meio não deixar
+a pessoa sem código nenhum. Preservar um código antigo faria a reemissão
+*aumentar* a superfície de ataque: quem troca a lista porque ela pode ter vazado
+ficaria com a lista vazada valendo do mesmo jeito.
+
+O passo TOTP aceito é gravado em `usuarios.mfa_ultimo_passo`, como em
+`/mfa/verificar`: o código gasto aqui não serve para o login em seguida.
+
+MFA não ativado responde 409 — não há lista a reemitir.
+
+**O freio da issue #33 vale nesta rota**, consultado antes de qualquer Argon2 e
+registrado nos dois desfechos, como em `/mfa/verificar`. A consequência precisa
+estar dita: as falhas são gravadas em `tentativas_login` com o e-mail da pessoa,
+e essas linhas contam para a trava de conta — **errar senha ou código muitas
+vezes aqui bloqueia o login dela** por `LOGIN_TRAVA_MINUTOS`. É o preço de não
+deixar seis dígitos serem sondados de graça numa rota que emite bypass do
+segundo fator, e é o mesmo comportamento que `/mfa/verificar` já tem.
 
 #### Login em duas etapas
 
@@ -394,9 +434,18 @@ MFA_CODIGOS_RECUPERACAO=8    # quantos códigos a ativação gera
   no mesmo `.env` que acompanha o dump seria teatro: quem tem o banco geralmente
   tem a configuração. A limitação é **declarada**, não escondida; fechá-la de
   verdade é KMS/HSM, com a sua própria issue.
-- **Não há como reemitir código de recuperação sem desativar o MFA.** Quem
-  perder a lista junto com o celular precisa de quem administre o banco: os
-  códigos só existem em claro no momento da ativação.
+- **Quem perde a lista *junto com o celular* ainda precisa de quem administre o
+  banco.** `/mfa/reemitir-codigos` resolve o caso de quem perdeu só a lista, e
+  ele exige o código do app autenticador — sem o celular não há como provar quem
+  é para reemitir, e os códigos só existem em claro no instante da emissão. Um
+  caminho de recuperação que dispensasse o segundo fator seria uma porta ao lado
+  da porta.
+- **Errar a reautenticação de `/mfa/reemitir-codigos` tranca o login.** As
+  falhas contam em `tentativas_login` com o e-mail da pessoa, como as de
+  `/mfa/verificar`. É o comportamento desejado — a alternativa é deixar sondar
+  seis dígitos de graça numa rota que emite bypass do segundo fator —, mas
+  significa que uma sessão sequestrada consegue trancar o login de quem ela
+  sequestrou, sem acertar credencial nenhuma.
 - **Não há política que obrigue MFA.** Ativar é decisão de cada pessoa; não
   existe configuração que o exija por papel ou para a operação inteira. Isso é
   requisito de produto, e inventá-lo aqui trancaria gente para fora sem ninguém

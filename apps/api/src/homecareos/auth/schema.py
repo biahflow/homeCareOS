@@ -226,9 +226,15 @@ class MfaCodigosRecuperacaoOut(BaseModel):
     """Os códigos de recuperação, em claro. Esta é a **única** vez que eles existem.
 
     O banco guarda só o hash Argon2id (ver
-    `db/models/codigo_recuperacao_mfa.py`): não há endpoint que os mostre de
-    novo, e quem os perder junto com o celular precisa de alguém que administre
-    o banco. É o preço de não guardar credencial em claro.
+    `db/models/codigo_recuperacao_mfa.py`): não há endpoint que mostre de novo
+    *estes* códigos. Duas rotas produzem uma lista — `/mfa/confirmar`, na
+    ativação, e `/mfa/reemitir-codigos` (issue #39), que substitui a lista
+    inteira mediante senha e código atual —, e cada uma delas os entrega uma
+    vez só.
+
+    Quem perder a lista **junto com o celular** continua precisando de alguém
+    que administre o banco: sem o app autenticador não há como provar quem é
+    para reemitir. É o preço de não guardar credencial em claro.
     """
 
     codigos: list[str]
@@ -241,6 +247,25 @@ class MfaDesativarRequest(BaseModel):
     segundo fator sozinha — que é exatamente o que ele existe para impedir. E a
     senha sozinha não bastaria porque ela pode ter vazado, que é a hipótese que
     faz alguém ativar MFA.
+    """
+
+    senha: str = Field(min_length=1)
+    codigo: str = Field(min_length=1)
+
+
+class MfaReemitirCodigosRequest(BaseModel):
+    """Corpo de `POST /api/auth/mfa/reemitir-codigos`: senha **e** código atual.
+
+    Mesma exigência de `MfaDesativarRequest`, e pelo mesmo peso: a resposta
+    desta rota é uma lista de credenciais que **pulam o segundo fator** no
+    login. Emiti-la com só a sessão faria de um cookie roubado um acesso
+    permanente, imune à troca de senha e ao próprio MFA.
+
+    O `codigo` aqui é só o TOTP do app autenticador — ao contrário de
+    `MfaVerificarRequest`, ele **não** aceita código de recuperação. Aceitar
+    faria um código de recuperação vazado se transformar numa lista nova de
+    oito, que é o oposto do que uma lista finita e de uso único existe para
+    garantir.
     """
 
     senha: str = Field(min_length=1)

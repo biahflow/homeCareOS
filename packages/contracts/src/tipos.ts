@@ -395,14 +395,16 @@ export interface MfaConfirmarParams {
 }
 
 /**
- * Resposta de `POST /api/auth/mfa/confirmar`: os códigos de recuperação em
- * claro, e **esta é a única vez que eles existem**.
+ * Os códigos de recuperação em claro, e **esta é a única vez que estes códigos
+ * existem**. Resposta de `POST /api/auth/mfa/confirmar` (ativação) e de
+ * `POST /api/auth/mfa/reemitir-codigos` (troca da lista inteira).
  *
  * O banco guarda só o hash Argon2id (`db/models/codigo_recuperacao_mfa.py`) e
- * não há endpoint que os mostre de novo. Quem consome isto tem uma obrigação
- * que o tipo não consegue expressar: dar à pessoa a chance de guardá-los antes
- * de sair da tela, e não persisti-los no cliente para "facilitar depois" —
- * armazená-los desfaz o motivo de a API só guardar o hash.
+ * não há endpoint que mostre de novo os códigos de uma emissão. Quem consome
+ * isto tem uma obrigação que o tipo não consegue expressar: dar à pessoa a
+ * chance de guardá-los antes de sair da tela, e não persisti-los no cliente
+ * para "facilitar depois" — armazená-los desfaz o motivo de a API só guardar o
+ * hash.
  */
 export interface MfaCodigosRecuperacaoOut {
   codigos: string[];
@@ -413,6 +415,22 @@ export interface MfaDesativarParams {
    * Os **dois** fatores, porque a API exige os dois: com só o código, uma
    * sessão sequestrada desligaria sozinha o segundo fator; com só a senha,
    * bastaria a senha vazada — que é a hipótese que faz alguém ativar MFA.
+   */
+  senha: string;
+  codigo: string;
+}
+
+export interface MfaReemitirCodigosParams {
+  /**
+   * Os **dois** fatores, pela mesma razão de {@link MfaDesativarParams} e com o
+   * mesmo peso: o que volta desta chamada é uma lista de credenciais que
+   * **pulam o segundo fator** no login. Emiti-la com só a sessão faria de um
+   * cookie roubado um acesso permanente à conta.
+   *
+   * `codigo` aqui é **só** o TOTP de seis dígitos do aplicativo — ao contrário
+   * de {@link MfaVerificarParams}, a API não aceita código de recuperação
+   * neste campo: um código vazado que gerasse oito novos desfaria o uso único
+   * da lista inteira.
    */
   senha: string;
   codigo: string;

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, QrCode, RefreshCw, ShieldCheck, ShieldOff } from "lucide-react";
+import { ArrowLeft, KeyRound, QrCode, RefreshCw, ShieldCheck, ShieldOff } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useId, useState } from "react";
 import { ApiError, confirmarMfa, iniciarMfa } from "@homecareos/contracts";
@@ -8,6 +8,7 @@ import type { MfaIniciarOut } from "@homecareos/contracts";
 import { API_BASE_URL } from "@/lib/env";
 import { CodigosRecuperacao } from "./CodigosRecuperacao";
 import { FormularioDesativarMfa } from "./FormularioDesativarMfa";
+import { FormularioReemitirCodigos } from "./FormularioReemitirCodigos";
 import { QrCodeOtpauth } from "./QrCodeOtpauth";
 
 /**
@@ -52,6 +53,9 @@ const AVISO_NAO_ATIVO = "O segundo fator não está ativado nesta conta. Nada fo
 const AVISO_DESATIVADO =
   "Segundo fator desativado. O próximo login vai pedir apenas a senha, e os códigos de " +
   "recuperação anteriores deixaram de valer.";
+const AVISO_CODIGOS_REEMITIDOS =
+  "Códigos de recuperação novos emitidos. Os anteriores deixaram de valer — inclusive os que " +
+  "você nunca usou. O aplicativo autenticador continua o mesmo.";
 
 /**
  * Onde a tela está — e note que **não existe um passo "inativo"**.
@@ -67,12 +71,24 @@ type Passo =
   | { nome: "inicial" }
   /** `credencial: null` é quem voltou a esta tela **sem** um QR novo — ver `handleJaEscaneei`. */
   | { nome: "cadastrando"; credencial: MfaIniciarOut | null }
-  | { nome: "codigos"; codigos: string[] }
+  /**
+   * `origem` existe só para o selo da tela de códigos dizer a verdade: depois
+   * de uma reemissão o segundo fator não *acabou* de ser ativado — ele já
+   * estava, e anunciar ativação diria à pessoa que algo mudou no login dela.
+   */
+  | { nome: "codigos"; codigos: string[]; origem: "ativacao" | "reemissao" }
   | { nome: "ativo" }
+  | { nome: "reemitindo" }
   | { nome: "desativando"; voltarPara: "inicial" | "ativo" };
 
 /**
- * Cadastro e desativação do segundo fator.
+ * Cadastro, reemissão dos códigos de recuperação e desativação do segundo fator.
+ *
+ * A reemissão (issue #39) só aparece no passo `ativo`, e não no `inicial`, pela
+ * mesma razão que o passo `inicial` existe: `GET /api/auth/eu` não devolve
+ * `mfa_ativado`, então a tela só sabe que a conta usa o segundo fator depois de
+ * a API dizer. Oferecer "emitir códigos novos" antes disso levaria a maioria a
+ * um 409.
  *
  * **Client Component, e nada aqui roda no carregamento.** As duas coisas são a
  * mesma decisão: `POST /mfa/iniciar` substitui o segredo a cada chamada, então
@@ -161,7 +177,7 @@ export function PainelSegundoFator() {
       const { codigos } = await confirmarMfa(API_BASE_URL, { codigo });
       // A partir daqui o segundo fator está ativado e estes códigos existem em
       // um lugar só: este array, nesta aba. Não há endpoint que os mostre de novo.
-      setPasso({ nome: "codigos", codigos });
+      setPasso({ nome: "codigos", codigos, origem: "ativacao" });
       setOcupado(false);
     } catch (causa) {
       if (causa instanceof ApiError && causa.status === 401) {
@@ -371,6 +387,7 @@ export function PainelSegundoFator() {
       {passo.nome === "codigos" && (
         <CodigosRecuperacao
           codigos={passo.codigos}
+          selo={passo.origem === "reemissao" ? "Códigos substituídos" : undefined}
           onConcluir={() => {
             // Trocar de passo é o que descarta o array: os códigos não vão para
             // lugar nenhum além desta renderização, e não há caminho de volta.
@@ -392,25 +409,63 @@ export function PainelSegundoFator() {
               aplicativo autenticador. Sem o celular à mão, use um dos códigos de recuperação.
             </p>
 
+            {/* O `<span>` não é enfeite: `.alert--info` é um flex container, e um
+                `<strong>` solto viraria uma coluna à parte no meio da frase. */}
             <p className="alert--info">
-              Não há como emitir códigos de recuperação novos sem desativar e ativar o segundo
-              fator de novo: o sistema guarda apenas uma versão embaralhada deles, e não existe
-              caminho na API para reemiti-los.
+              <span>
+                Perdeu a lista de códigos de recuperação, ou acha que ela pode ter sido vista por
+                outra pessoa? Emita uma lista nova com a sua senha e o código do aplicativo — o
+                aplicativo autenticador continua o mesmo, e{" "}
+                <strong>os códigos atuais deixam de valer</strong>.
+              </span>
             </p>
 
-            <button
-              type="button"
-              onClick={() => {
-                limpar();
-                setPasso({ nome: "desativando", voltarPara: "ativo" });
-              }}
-              className="btn btn--secondary w-fit"
-            >
-              <ShieldOff size={16} />
-              Desativar o segundo fator
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  limpar();
+                  setPasso({ nome: "reemitindo" });
+                }}
+                className="btn btn--secondary"
+              >
+                <KeyRound size={16} />
+                Emitir códigos novos
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  limpar();
+                  setPasso({ nome: "desativando", voltarPara: "ativo" });
+                }}
+                className="btn btn--ghost"
+              >
+                <ShieldOff size={16} />
+                Desativar o segundo fator
+              </button>
+            </div>
           </div>
         </section>
+      )}
+
+      {passo.nome === "reemitindo" && (
+        <FormularioReemitirCodigos
+          onEmitidos={(codigos) => {
+            // O aviso sobe junto com a lista nova: ele fica visível acima do
+            // painel de códigos e sobrevive ao "Concluir", que é quando a
+            // pessoa precisa lembrar do que acabou de perder valor.
+            setPasso({ nome: "codigos", codigos, origem: "reemissao" });
+            setAviso(AVISO_CODIGOS_REEMITIDOS);
+          }}
+          onNaoAtivado={() => {
+            setPasso({ nome: "inicial" });
+            setAviso(AVISO_NAO_ATIVO);
+          }}
+          onCancelar={() => {
+            limpar();
+            setPasso({ nome: "ativo" });
+          }}
+        />
       )}
 
       {passo.nome === "desativando" && (

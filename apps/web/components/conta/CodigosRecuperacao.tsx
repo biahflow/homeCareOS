@@ -8,10 +8,13 @@ const NOME_DO_ARQUIVO = "homecareos-codigos-recuperacao.txt";
 /**
  * A exibição **única** dos códigos de recuperação.
  *
- * `POST /api/auth/mfa/confirmar` é o único lugar em que eles existem em claro:
- * o banco guarda apenas o hash Argon2id, não há endpoint que os mostre de novo,
- * e quem os perder junto com o celular vai precisar de alguém com acesso ao
- * banco. Tudo nesta tela sai daí:
+ * Duas rotas produzem uma lista — `POST /api/auth/mfa/confirmar`, na ativação, e
+ * `POST /api/auth/mfa/reemitir-codigos`, que troca a lista inteira —, e a
+ * resposta delas é o único lugar em que os códigos existem em claro: o banco
+ * guarda apenas o hash Argon2id, não há endpoint que mostre de novo os códigos
+ * de uma emissão, e quem os perder **junto com o celular** vai precisar de
+ * alguém com acesso ao banco (sem o aplicativo autenticador não há como provar
+ * quem é para reemitir). Tudo nesta tela sai daí:
  *
  * - **copiar e baixar**, porque transcrever oito códigos à mão de uma tela para
  *   um papel erra — e o erro só aparece no dia em que o celular sumiu;
@@ -29,9 +32,17 @@ const NOME_DO_ARQUIVO = "homecareos-codigos-recuperacao.txt";
 export function CodigosRecuperacao({
   codigos,
   onConcluir,
+  selo = "Segundo fator ativado",
 }: {
   codigos: string[];
   onConcluir: () => void;
+  /**
+   * O selo do cabeçalho. Existe porque esta tela serve às duas emissões, e o
+   * default só é verdade em uma: depois de uma reemissão o segundo fator não
+   * *acabou* de ser ativado — ele já estava. Anunciar ativação ali diria à
+   * pessoa que algo mudou no login dela, e nada mudou.
+   */
+  selo?: string;
 }) {
   const confirmacaoId = useId();
   const [confirmado, setConfirmado] = useState(false);
@@ -74,7 +85,7 @@ export function CodigosRecuperacao({
     <section className="panel">
       <div className="panel-heading">
         <h2>Guarde os códigos de recuperação</h2>
-        <span className="state state--1">Segundo fator ativado</span>
+        <span className="state state--1">{selo}</span>
       </div>
 
       <div className="grid gap-4">
@@ -83,8 +94,10 @@ export function CodigosRecuperacao({
         <p role="alert" className="alert--error">
           <span>
             <strong>Esta é a única vez que estes códigos aparecem.</strong> Não há como pedi-los de
-            novo: o sistema guarda apenas uma versão embaralhada deles. Se você perder os códigos e
-            o celular, só recupera o acesso com quem administra o banco de dados.
+            novo: o sistema guarda apenas uma versão embaralhada deles. Dá para emitir uma lista
+            nova a qualquer momento, com a senha e o código do aplicativo — mas isso invalida esta.
+            Se você perder os códigos <em>e</em> o celular, só recupera o acesso com quem administra
+            o banco de dados.
           </span>
         </p>
 
@@ -161,7 +174,10 @@ function montarArquivo(codigos: string[]): string {
     `Gerados em ${gerado}`,
     "",
     "Cada código vale UMA vez e substitui o código do aplicativo autenticador",
-    "na tela de login. Eles não podem ser exibidos de novo.",
+    "na tela de login. Estes códigos não podem ser exibidos de novo.",
+    "",
+    "Perdeu esta lista? Em Conta > Segurança dá para emitir outra, com a senha",
+    "e o código do aplicativo. A lista abaixo deixa de valer quando isso acontece.",
     "",
     ...codigos,
     "",

@@ -15,8 +15,12 @@ que nunca existiu, e a linha preservada é o que permite auditar depois que
 alguém entrou por este caminho — que é justamente o evento que merece uma
 conversa ("por que você usou um código de recuperação ontem?").
 
-A linha é apagada de verdade em dois momentos: ao desativar o MFA e ao
-reconfirmar a ativação, porque aí os códigos antigos deixariam de ter dono.
+A linha é apagada de verdade em três momentos: ao desativar o MFA, ao
+reconfirmar a ativação e ao reemitir a lista (`POST /api/auth/mfa/reemitir-codigos`,
+issue #39). Nos dois primeiros porque os códigos antigos deixariam de ter dono;
+no terceiro porque uma lista nova que convivesse com a antiga não substituiria
+nada — quem reemite justamente porque a lista pode ter vazado continuaria com a
+lista vazada valendo.
 """
 
 import uuid
