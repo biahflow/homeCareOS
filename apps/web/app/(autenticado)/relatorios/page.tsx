@@ -32,6 +32,9 @@ import {
 import type { FiltrosDeRelatorio } from "@/components/relatorios/filtros";
 import { FiltrosRelatorio } from "@/components/relatorios/FiltrosRelatorio";
 import { FormularioBaseline } from "@/components/relatorios/FormularioBaseline";
+import { MetricasPorOperadora } from "@/components/relatorios/MetricasPorOperadora";
+import { PainelComparacaoGlosa } from "@/components/relatorios/PainelComparacaoGlosa";
+import { VolumePorDia } from "@/components/relatorios/VolumePorDia";
 import {
   formatarCompetencia,
   formatarDataHora,
@@ -96,7 +99,7 @@ function AvisoDeGestao({ mensagem }: { mensagem: string }) {
  * Relatórios e métricas da conferência.
  *
  * Server Component, com os filtros na URL (`searchParams`) — ver a docstring de
- * `components/relatorios/filtros.ts`. Três coisas desta tela são contrato, e não
+ * `components/relatorios/filtros.ts`. Cinco coisas desta tela são contrato, e não
  * escolha de layout:
  *
  * 1. **Os dois blocos de métrica nunca se fundem.** Ver `CartaoCompetencia`.
@@ -105,6 +108,12 @@ function AvisoDeGestao({ mensagem }: { mensagem: string }) {
  * 3. **A cor da linha vem de `severidade`, decidida pela API.** Não há
  *    mapeamento de status para cor aqui — `severidade_de` é a autoridade, e
  *    duplicá-la criaria uma segunda regra para divergir da primeira.
+ * 4. **`comparacao_glosa: null` também é ausência, não zero.** Ver
+ *    `PainelComparacaoGlosa` — a mesma regra do item 2, aplicada ao
+ *    antes/depois entre competências.
+ * 5. **A linha de operadora `null`, em `por_operadora`, nunca é escondida.**
+ *    Ver `MetricasPorOperadora` — é ela que agrupa os documentos que ninguém
+ *    conseguiu vincular.
  *
  * A autorização é o **inverso** da fila de pendências: lá o gestor não age;
  * aqui ele é o único que escreve (o baseline). Esconder o formulário para os
@@ -238,6 +247,43 @@ export default async function RelatoriosPage({
           </>
         )}
       </section>
+
+      {gestao.tipo === "ok" && (
+        <section className="panel">
+          <div className="panel-heading">
+            <h2>Documentos por operadora</h2>
+          </div>
+          <p className="alert--info mb-4">
+            Mesma janela de competências dos cartões acima. A linha sem operadora agrupa os
+            documentos que ninguém conseguiu vincular — é a que mais interessa olhar.
+          </p>
+          <MetricasPorOperadora porOperadora={gestao.metricas.por_operadora} />
+        </section>
+      )}
+
+      {gestao.tipo === "ok" && (
+        <section className="panel">
+          <div className="panel-heading">
+            <h2>Documentos por dia</h2>
+          </div>
+          <p className="alert--info mb-4">
+            Para enxergar o pico do fechamento, na mesma janela de competências dos cartões acima.
+          </p>
+          <VolumePorDia dias={gestao.metricas.por_dia} />
+        </section>
+      )}
+
+      {gestao.tipo === "ok" && (
+        <section className="panel">
+          <div className="panel-heading">
+            <h2>Comparação de glosa</h2>
+          </div>
+          <PainelComparacaoGlosa
+            comparacao={gestao.metricas.comparacao_glosa}
+            competencias={gestao.metricas.competencias}
+          />
+        </section>
+      )}
 
       {gestao.tipo === "ok" && (
         <section className="panel">
