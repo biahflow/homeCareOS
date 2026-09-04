@@ -39,6 +39,7 @@ from homecareos.api.routers.pendencias import router as pendencias_router
 from homecareos.auth.dependencies import exigir_papel
 from homecareos.auth.router import router as auth_router
 from homecareos.auth.schema import Papel
+from homecareos.auth.usuarios_router import router as usuarios_router
 from homecareos.config import Settings, get_settings
 from homecareos.intake.router import router as intake_router
 from homecareos.reports.router import router as relatorios_router
@@ -96,6 +97,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # não consegue nem descartar; `GET /api/auth/eu` exige credencial por conta
     # própria, na dependency do endpoint.
     app.include_router(auth_router)
+    # Administração de usuários (issue #30, ADR 0004): as três rotas são do
+    # coordenador. A regra fica aqui, e não endpoint a endpoint, porque é
+    # justamente neste router que um endpoint novo precisa nascer protegido por
+    # construção — quem cria usuário decide quem entra. A recusa de atribuir o
+    # papel `gestor` continua sendo do endpoint: ela é sobre o papel atribuído,
+    # não sobre quem chama, e vale inclusive para a chave de máquina, que esta
+    # linha (como todas as outras) deixa passar.
+    app.include_router(usuarios_router, dependencies=[Depends(exigir_papel(Papel.COORDENADOR))])
 
     app.include_router(
         intake_router,
