@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import io
 import uuid
 from pathlib import Path
 
 import boto3
 import pytest
+from botocore.response import StreamingBody
 from botocore.stub import ANY, Stubber
 
 from homecareos.config import Settings
 from homecareos.storage import (
+    CHUNK_SIZE,
+    CONTENT_TYPE_PADRAO,
     LocalDocumentStorage,
+    ObjectNotFoundError,
     S3DocumentStorage,
     StorageError,
     build_key,
+    content_type_for_key,
     get_storage,
 )
 
@@ -147,3 +153,86 @@ def test_get_storage_fora_de_local_usa_s3_mesmo_sem_credencial() -> None:
     settings = Settings(environment="production", s3_access_key="", s3_secret_key="")
 
     assert isinstance(get_storage(settings), S3DocumentStorage)
+
+
+# --- leitura: `get` (issue #51) ----------------------------------------------
+
+
+def _conteudo_maior_que_um_bloco() -> bytes:
+    """Conteúdo que não cabe num bloco só — é o caso que a leitura em blocos existe para servir."""
+    return b"pagina-renderizada" * (CHUNK_SIZE // 4)
+
+
+def test_local_storage_get_devolve_os_bytes_gravados_em_blocos(tmp_path: Path) -> None:
+    storage = LocalDocumentStorage(root=tmp_path)
+    data = _conteudo_maior_que_um_bloco()
+    key = storage.put("documentos/doc-1/hash.png", data, "image/png")
+
+    blocos = list(storage.get(key))
+
+    assert len(blocos) > 1, "conteúdo maior que um bloco deveria sair em vários pedaços"
+    assert b"".join(blocos) == data
+
+
+def test_local_storage_get_de_chave_ausente_falha_na_chamada(tmp_path: Path) -> None:
+    """A exceção sai da chamada, não da primeira iteração.
+
+    Este `pytest.raises` **não** consome o iterador de propósito: num `get` que
+    fosse gerador, a chave ausente só estouraria dentro do corpo da resposta já
+    em transmissão, tarde demais para virar 404.
+    """
+    storage = LocalDocumentStorage(root=tmp_path)
+
+    with pytest.raises(ObjectNotFoundError):
+        storage.get("documentos/doc-1/sumiu.png")
+
+
+def test_s3_storage_get_devolve_os_bytes_em_blocos() -> None:
+    settings = _settings()
+    storage, stubber = _stubbed_s3(settings)
+    data = _conteudo_maior_que_um_bloco()
+    key = "documentos/doc-1/hash.png"
+
+    stubber.add_response(
+        "get_object",
+        {"Body": StreamingBody(io.BytesIO(data), len(data)), "ContentLength": len(data)},
+        {"Bucket": settings.s3_bucket, "Key": key},
+    )
+    with stubber:
+        blocos = list(storage.get(key))
+
+    assert len(blocos) > 1
+    assert b"".join(blocos) == data
+    stubber.assert_no_pending_responses()
+
+
+def test_s3_storage_get_de_chave_ausente_falha_na_chamada() -> None:
+    settings = _settings()
+    storage, stubber = _stubbed_s3(settings)
+
+    stubber.add_client_error("get_object", service_error_code="NoSuchKey", http_status_code=404)
+    with stubber, pytest.raises(ObjectNotFoundError):
+        storage.get("documentos/doc-1/sumiu.png")
+
+
+def test_s3_storage_get_com_falha_de_infra_nao_vira_objeto_ausente() -> None:
+    """Sem permissão é storage quebrado (503), não documento sumido (404)."""
+    settings = _settings()
+    storage, stubber = _stubbed_s3(settings)
+
+    stubber.add_client_error("get_object", service_error_code="AccessDenied", http_status_code=403)
+    with stubber, pytest.raises(StorageError) as excinfo:
+        storage.get("documentos/doc-1/hash.png")
+
+    assert not isinstance(excinfo.value, ObjectNotFoundError)
+
+
+def test_content_type_for_key_reconhece_o_que_o_intake_grava() -> None:
+    assert content_type_for_key("documentos/doc-1/hash.png") == "image/png"
+    assert content_type_for_key("documentos/doc-1/hash.jpg") == "image/jpeg"
+
+
+def test_content_type_for_key_desconhecido_cai_em_octet_stream() -> None:
+    """Servir prontuário como um tipo adivinhado é pior do que não adivinhar."""
+    assert content_type_for_key("documentos/doc-1/hash.bin") == CONTENT_TYPE_PADRAO
+    assert content_type_for_key("s3://fake/documentos-teste/1") == CONTENT_TYPE_PADRAO

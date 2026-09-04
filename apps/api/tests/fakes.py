@@ -10,6 +10,7 @@ oferecer para exercitar o caminho de reenvio.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 import pymupdf
@@ -18,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from homecareos.db.models import Documento
 from homecareos.intake.pdf import PageImage
 from homecareos.intake.repository import DocumentoRegistrado
-from homecareos.storage import StorageError
+from homecareos.storage import ObjectNotFoundError, StorageError
 
 
 def make_pdf(num_pages: int) -> bytes:
@@ -55,6 +56,18 @@ class FakeStorage:
         self.chaves.append(key)
         return key
 
+    def get(self, key: str) -> Iterator[bytes]:
+        """Respeita o contrato do Protocol: a chave ausente estoura **aqui**.
+
+        Não é um gerador de propósito — num gerador o `raise` só aconteceria na
+        primeira iteração, com a resposta já em transmissão, e o fake deixaria
+        passar exatamente o defeito que o 404 do endpoint de arquivo evita.
+        """
+        if key not in self.objetos:
+            raise ObjectNotFoundError(f"Objeto {key!r} não está no storage")
+        conteudo, _content_type = self.objetos[key]
+        return iter([conteudo])
+
     def presigned_url(self, key: str, expires_in: int = 3600) -> str:
         return f"memory://{key}"
 
@@ -65,6 +78,9 @@ class FailingStorage:
 
     def put(self, key: str, data: bytes, content_type: str) -> str:
         raise StorageError(f"storage indisponível ao gravar {key!r}")
+
+    def get(self, key: str) -> Iterator[bytes]:
+        raise StorageError(f"storage indisponível ao ler {key!r}")
 
     def presigned_url(self, key: str, expires_in: int = 3600) -> str:
         raise StorageError("storage indisponível")

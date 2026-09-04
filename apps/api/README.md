@@ -29,6 +29,32 @@ uma regra que a operação desativou: rodar o seed de novo em todo deploy não
 desfaz ajuste nenhum feito à mão no banco. Mudar o conteúdo de uma regra já
 cadastrada é migration de dados explícita, não efeito colateral de seed.
 
+## O documento escaneado
+
+`GET /api/documentos/{id}/arquivo` serve a página escaneada (issue #51). A
+conferência é comparar o que a extração leu com o que está no papel, e até esta
+entrega a interface não tinha como mostrar o papel: `documentos.arquivo_url`
+guarda a **chave** do objeto no storage (`documentos/{uuid}/{sha256}.png`), não
+uma URL.
+
+**Streaming pela API, e não URL assinada** — ADR 0003. Em resumo: o presigned do
+MinIO é assinado sobre `S3_ENDPOINT_URL`, que no Compose é `http://minio:9000`
+(rede interna, que o navegador não alcança, e o host entra na assinatura); o
+`LocalDocumentStorage` devolve `file://`; e streaming mantém o prontuário atrás
+da mesma autorização do resto da API, em vez de um link que vive fora da sessão
+até expirar.
+
+O arquivo sai em blocos de 64 KiB, com `Content-Type` deduzido da extensão da
+chave e `Content-Disposition: inline` (quem confere quer ver, não baixar).
+**Documento inexistente e documento cujo arquivo não está no storage respondem
+o mesmo 404**: arquivo que sumiu do bucket não é defeito da aplicação. Storage
+fora do ar continua sendo 503.
+
+O campo `arquivo_url` **mantém o nome apesar de ser uma chave**, e é decisão
+consciente: renomeá-lo é quebra de contrato e precisa mudar API, `packages/contracts`
+e `apps/web` juntos. Ele ganhou descrição explícita no OpenAPI, e o endpoint
+acima remove o motivo de alguém tentar usá-lo como endereço.
+
 ## Relatórios e métricas
 
 Dois produtos sobre o mesmo dado, com públicos diferentes (issue #8), sob
@@ -158,6 +184,7 @@ sem isso, o tempo de resposta diria quem está cadastrado.
 | --- | :-: | :-: | :-: |
 | `POST /api/documentos` | ✅ | ✅ | — |
 | `GET /api/documentos`, `GET /api/documentos/{id}` | ✅ | ✅ | ✅ |
+| `GET /api/documentos/{id}/arquivo` | ✅ | ✅ | ✅ |
 | `POST /api/documentos/{id}/revalidar` | ✅ | ✅ | — |
 | `GET /api/pendencias`, `/resumo` | ✅ | ✅ | ✅ |
 | `PATCH /api/pendencias/{id}` | ✅ | ✅ | — |

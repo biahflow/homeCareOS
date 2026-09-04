@@ -43,8 +43,10 @@ from homecareos.db.models import (
     Usuario,
 )
 from homecareos.db.session import get_sessionmaker
+from homecareos.intake.router import get_document_storage
 from homecareos.main import app
 from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.fakes import FakeStorage
 
 pytestmark = pytest.mark.integration
 
@@ -275,6 +277,27 @@ def test_os_tres_papeis_leem_o_relatorio_de_conferencia(
     for papel, cliente in clientes.items():
         resposta = cliente.get(f"/api/relatorios/conferencia?competencia={COMPETENCIA_TESTE}")
         assert resposta.status_code == 200, f"{papel.value} não conseguiu ler o relatório"
+
+
+def test_os_tres_papeis_veem_o_documento_escaneado(
+    clientes: dict[Papel, TestClient], cenario: Cenario
+) -> None:
+    """Servir o arquivo é leitura de documento, e ler documento é dos três (issue #51).
+
+    O storage é substituído por um fake aqui — o que este teste guarda é a
+    autorização da rota nova, não a integração com o MinIO (essa vive em
+    `tests/test_api_documento_arquivo.py`, contra storage real).
+    """
+    documento = cenario.documentos[0]
+    conteudo = b"pagina-escaneada"
+    app.dependency_overrides[get_document_storage] = lambda: FakeStorage(
+        objetos={documento.arquivo_url: (conteudo, "image/png")}
+    )
+
+    for papel, cliente in clientes.items():
+        resposta = cliente.get(f"/api/documentos/{documento.id}/arquivo")
+        assert resposta.status_code == 200, f"{papel.value} não conseguiu ver o documento"
+        assert resposta.content == conteudo
 
 
 def test_conferente_transiciona_pendencia(
