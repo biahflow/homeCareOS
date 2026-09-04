@@ -112,6 +112,17 @@ def rastro(sessao: Session) -> Iterator[list[uuid.UUID]]:
             ),
             {"ids": ids},
         )
+        # `auditoria_usuarios` (issue #30) referencia `usuarios` como ator E
+        # como alvo — apagada antes do usuário pelo mesmo motivo de
+        # `tokens_recuperacao`/`sessoes` logo abaixo: sem isso a FK bloqueia o
+        # `delete from usuarios` seguinte.
+        sessao.execute(
+            text(
+                "delete from auditoria_usuarios where alvo_usuario_id = any(:ids) "
+                "or usuario_id = any(:ids)"
+            ),
+            {"ids": ids},
+        )
         sessao.execute(
             text("delete from tokens_recuperacao where usuario_id = any(:ids)"), {"ids": ids}
         )

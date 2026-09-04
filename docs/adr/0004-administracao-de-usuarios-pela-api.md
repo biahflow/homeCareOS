@@ -140,6 +140,13 @@ operação com um único coordenador não consegue desligá-lo pela API.
   documento (`documento_id` é `NOT NULL`) e não serve para registrar "quem
   promoveu fulano a coordenador". Uma tabela de auditoria administrativa é
   migration, e fica para a sua própria issue.
+  **Resolvido pela issue #30**: a tabela `auditoria_usuarios` registra criação,
+  alteração, desativação e reativação — ator, alvo, campo alterado (valor
+  anterior e novo) e quando — na mesma transação da mutação, lida por
+  `GET /api/usuarios/auditoria` (só coordenador). Não abriu ADR próprio: não
+  muda quem administra usuário nem a matriz de papéis, só fecha a lacuna que
+  este ADR já registrava como decisão pendente, sem introduzir direção
+  arquitetural nova. Ver "Auditoria administrativa" no `apps/api/README.md`.
 - **O token de definição de senha expira em `SENHA_RESET_VALIDADE_MINUTOS` (30).**
   Se o administrador demorar a repassá-lo, a pessoa precisa pedir um link em
   `POST /api/auth/senha/esqueci` — que depende de SMTP configurado. Sem SMTP, o
