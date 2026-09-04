@@ -55,6 +55,7 @@ export type { ApiErrorPayload } from "./erros";
 export type { OpcoesRequisicao } from "./cliente";
 export {
   atualizarPendencia,
+  caminhoArquivoDocumento,
   confirmarMfa,
   desativarMfa,
   esqueciSenha,

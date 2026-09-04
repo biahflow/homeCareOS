@@ -564,6 +564,27 @@ export async function obterDocumento(
 }
 
 /**
+ * Caminho de `GET /api/documentos/{id}/arquivo`: a página escaneada, servida
+ * em streaming pela própria API (issue #51, PR #54) — não mais uma URL
+ * assinada do storage, e não mais um endpoint inexistente.
+ *
+ * **Isto monta um caminho, não faz a chamada.** Quem busca o arquivo é o
+ * navegador — via `<img src>` ou `<a href target="_blank">` — não este
+ * cliente: é o navegador que precisa mandar o cookie de sessão, e um `fetch`
+ * daqui não colocaria os bytes em lugar nenhum útil. Por isso a assinatura
+ * segue {@link urlRelatorioConferenciaCsv}, não {@link obterDocumento}.
+ *
+ * `baseUrl` existe pela mesma razão de sempre (ADR 0002): quem chama do
+ * navegador passa a string vazia de `lib/env.ts:API_BASE_URL`, para o
+ * resultado ser um caminho relativo que `apps/web/proxy.ts` repassa. Passar a
+ * URL direta da API aqui vazaria endereço de servidor para o navegador e
+ * pularia o proxy que carrega o cookie.
+ */
+export function caminhoArquivoDocumento(baseUrl: string, documentoId: string): string {
+  return `${baseUrl}${CAMINHO_DOCUMENTOS}/${encodeURIComponent(documentoId)}/arquivo`;
+}
+
+/**
  * `POST /api/documentos/{id}/revalidar`: reaplica as regras ativas sobre a
  * extração **já existente** e reclassifica o documento.
  *

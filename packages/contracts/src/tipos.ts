@@ -136,16 +136,18 @@ export interface ValidacaoResumo {
 }
 
 /**
- * O documento com tudo o que a conferência precisa — menos o próprio arquivo.
+ * O documento com tudo o que a conferência precisa, incluindo o que descreve
+ * o arquivo — mas não os bytes dele.
  *
  * **`arquivo_url` não é uma URL.** Apesar do nome, o campo guarda a *chave do
  * objeto no storage* (`documentos/{id}/{sha256}.png`, montada em
- * `intake/service.py`), e **nenhum endpoint da API serve o arquivo nem devolve
- * URL assinada**: `storage.presigned_url()` existe e não é chamado por rota
- * nenhuma. Usá-lo como `src` de imagem ou `href` de link produz um caminho
- * relativo quebrado; montar a URL do MinIO no cliente também não funciona (rede
- * interna do Compose, e sem credencial). Trate como referência técnica —
- * serve para achar o objeto no storage, não para abrir o documento.
+ * `intake/service.py`). Usá-la como `src` de imagem ou `href` de link produz
+ * um caminho relativo quebrado; montar a URL do MinIO no cliente também não
+ * funciona (rede interna do Compose, e sem credencial). Para exibir a página
+ * escaneada, use {@link caminhoArquivoDocumento} — `GET
+ * /api/documentos/{id}/arquivo` (issue #51, PR #54) serve o arquivo em
+ * streaming, e é esse endpoint, não este campo, que carrega os bytes. Trate
+ * `arquivo_url` como referência técnica para achar o objeto no storage.
  */
 export interface DocumentoDetalhe extends DocumentoListItem {
   /** **Chave do storage, não endereço.** Ver a nota da interface. */

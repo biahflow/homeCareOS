@@ -40,10 +40,11 @@ import { usuarioDaSessao } from "@/lib/sessao";
  *
  * Duas coisas desta tela são contrato, e não escolha de layout:
  *
- * 1. **O documento escaneado não é exibido, e não é esquecimento.** `arquivo_url`
- *    guarda a *chave do objeto no storage*, não um endereço; nenhum endpoint da
- *    API serve o arquivo nem devolve URL assinada. Ver o detalhe, onde a chave
- *    aparece como referência técnica e a limitação é dita em voz alta.
+ * 1. **O documento escaneado não aparece nesta lista, por layout, não por
+ *    limitação.** `GET /api/documentos/{id}/arquivo` (PR #54) serve a página
+ *    escaneada, mas esta tela é uma lista de triagem — sem espaço para exibir
+ *    uma imagem de verdade por linha. Ela aparece no detalhe de cada
+ *    documento (`ImagemDocumento`), onde há espaço para isso.
  * 2. **A cor do status é a mesma do relatório.** Ela sai de
  *    `components/documentos/vocabulario.ts`, que espelha
  *    `reports/conferencia._SEVERIDADE_POR_STATUS` porque esta rota não devolve
