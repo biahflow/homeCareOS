@@ -181,6 +181,49 @@ class Settings(BaseSettings):
     # perceptível numa tabela que recebe insert a cada login.
     retencao_tamanho_lote: int = 1000
 
+    # Rate limit das rotas caras, por identidade do principal (ADR 0005, issue
+    # #39). Só as quatro rotas caras entram; as leituras paginadas continuam sem
+    # limite. Ver `homecareos/limites/` e a seção "Rate limit das rotas caras"
+    # do README de apps/api.
+    #
+    # TODOS OS OITO NÚMEROS ABAIXO SÃO ASSUNÇÃO, NÃO REQUISITO MEDIDO. O ADR diz
+    # explicitamente que calibrar sem medir uso real produz número inventado com
+    # cara de decisão. Eles nascem FOLGADOS de propósito: o pior desfecho deste
+    # freio não é um abuso que passa, é uma conferente bloqueada no meio do
+    # turno — que não abre chamado dizendo "recebi 429", e sim que o sistema
+    # parou. A primeira calibragem precisa olhar uso real.
+    #
+    # A chave de máquina (`X-API-Key`) tem limite próprio e mais folgado em todos
+    # os recursos: o padrão de uso dela é legítimo e repetitivo (é a credencial
+    # das integrações), e um contador só para toda a operação é exatamente o que
+    # o limite por identidade existe para evitar.
+    #
+    # A janela é de 1 hora para os quatro recursos, e é constante e não
+    # configuração — `limites/protecao.JANELA`, como as outras duas janelas de
+    # uma hora do projeto.
+    #
+    # Upload de documento: a rota que chama o provider de IA, a única cujo abuso
+    # custa dinheiro. Uma conferente processando sem parar não passa de algumas
+    # dezenas por hora; 120 é folga de 2-3x sobre o uso intenso.
+    limite_upload_documento_pessoa_por_hora: int = 120
+    limite_upload_documento_maquina_por_hora: int = 600
+    # CSV completo: ninguém exporta o extrato inteiro 20 vezes por hora com
+    # propósito.
+    limite_relatorio_csv_pessoa_por_hora: int = 20
+    limite_relatorio_csv_maquina_por_hora: int = 60
+    # Download do arquivo: abrir documento é o gesto mais frequente da
+    # conferência, e este limite existe para conter LAÇO, não uso. Por isso ele é
+    # o mais alto dos quatro para pessoa.
+    limite_download_arquivo_pessoa_por_hora: int = 600
+    limite_download_arquivo_maquina_por_hora: int = 600
+    # Varredura de alertas: envia WhatsApp de verdade. Para pessoa o limite é
+    # apertado de propósito; para máquina é folgado porque nada garante que
+    # alguém não tenha apontado um agendador para a rota HTTP. (O cron de
+    # produção chama `python -m homecareos.alerts.scan`, o módulo, e não faz
+    # requisição nenhuma — não é afetado por este limite.)
+    limite_varredura_alertas_pessoa_por_hora: int = 30
+    limite_varredura_alertas_maquina_por_hora: int = 600
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

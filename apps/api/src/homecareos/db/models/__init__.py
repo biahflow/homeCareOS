@@ -4,6 +4,7 @@ from homecareos.db.models.alerta import AlertaEnviado
 from homecareos.db.models.auditoria_usuario import AuditoriaUsuario
 from homecareos.db.models.baseline import BaselineCompetencia
 from homecareos.db.models.codigo_recuperacao_mfa import CodigoRecuperacaoMfa
+from homecareos.db.models.consumo_rate_limit import ConsumoRateLimit
 from homecareos.db.models.documento import Documento
 from homecareos.db.models.enums import (
     DocumentoStatus,
@@ -29,6 +30,7 @@ __all__ = [
     "AuditoriaUsuario",
     "BaselineCompetencia",
     "CodigoRecuperacaoMfa",
+    "ConsumoRateLimit",
     "Documento",
     "DocumentoStatus",
     "Extracao",

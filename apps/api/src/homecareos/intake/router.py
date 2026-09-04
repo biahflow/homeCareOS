@@ -50,6 +50,8 @@ from homecareos.intake.errors import (
 from homecareos.intake.repository import DocumentoRepository, SqlAlchemyDocumentoRepository
 from homecareos.intake.schemas import DocumentoCriado, UploadResponse, competencia_valida
 from homecareos.intake.service import receber_upload
+from homecareos.limites.dependencies import limitar
+from homecareos.limites.schema import Recurso
 from homecareos.storage import DocumentStorage, StorageError, get_storage
 
 router = APIRouter(prefix="/api", tags=["documentos"])
@@ -79,6 +81,11 @@ def get_extraction_dispatcher(
     response_model=UploadResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Ingere uma evolução escaneada, uma página por documento",
+    # Rate limit por identidade (ADR 0005): esta é a rota mais cara do sistema —
+    # cada upload dispara uma chamada paga ao provider de IA, síncrona, dentro
+    # da requisição. É a única rota em que o abuso tem custo em dinheiro.
+    dependencies=[Depends(limitar(Recurso.UPLOAD_DOCUMENTO))],
+    responses={429: {"description": "Limite de uploads por hora atingido para esta identidade"}},
 )
 def criar_documentos(
     response: Response,

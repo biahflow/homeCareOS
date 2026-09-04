@@ -35,6 +35,8 @@ from homecareos.api.pagination import (
 )
 from homecareos.config import Settings, get_settings
 from homecareos.db.session import get_session
+from homecareos.limites.dependencies import limitar
+from homecareos.limites.schema import Recurso
 
 router = APIRouter(prefix="/api/alertas", tags=["alertas"])
 
@@ -77,6 +79,14 @@ class AlertaItem(BaseModel):
         "avisem duas vezes do mesmo assunto. É o mesmo trabalho que o "
         "`python -m homecareos.alerts.scan` do cron faz."
     ),
+    # Rate limit por identidade (ADR 0005): a varredura dispara os detectores e
+    # fala com o gateway de WhatsApp, enviando mensagem de verdade. O cron de
+    # produção NÃO passa por aqui — ele chama `python -m homecareos.alerts.scan`,
+    # o módulo, que não faz requisição nenhuma —, mas a chave de máquina ganha
+    # limite folgado mesmo assim: nada garante que alguém não tenha apontado um
+    # agendador para esta rota.
+    dependencies=[Depends(limitar(Recurso.VARREDURA_ALERTAS))],
+    responses={429: {"description": "Limite de varreduras por hora atingido para esta identidade"}},
 )
 def varredura(
     session: Annotated[Session, Depends(get_session)],

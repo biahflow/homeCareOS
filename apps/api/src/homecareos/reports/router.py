@@ -42,6 +42,8 @@ from homecareos.auth.dependencies import exigir_papel
 from homecareos.auth.schema import Papel
 from homecareos.db.models import BaselineCompetencia, DocumentoStatus, Operadora
 from homecareos.db.session import get_session, get_sessionmaker
+from homecareos.limites.dependencies import limitar
+from homecareos.limites.schema import Recurso
 from homecareos.reports import csv_export
 from homecareos.reports.conferencia import (
     FiltroConferencia,
@@ -146,6 +148,12 @@ def _stream_csv(filtro: FiltroConferencia) -> Iterator[str]:
         "inteiro do filtro, transmitido em blocos."
     ),
     response_class=StreamingResponse,
+    # Rate limit por identidade (ADR 0005): é o extrato inteiro do filtro, sem
+    # o teto de `limite <= 200` que segura as leituras paginadas.
+    dependencies=[Depends(limitar(Recurso.RELATORIO_CSV))],
+    responses={
+        429: {"description": "Limite de exportações por hora atingido para esta identidade"}
+    },
 )
 def relatorio_conferencia_csv(
     filtro: Annotated[FiltroConferencia, Depends(filtro_conferencia)],

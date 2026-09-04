@@ -1,6 +1,6 @@
 # ADR 0005 — Rate limit das rotas caras, por identidade
 
-- **Status:** proposto
+- **Status:** aceito
 - **Data:** 2026-09-04
 - **Issue:** #39
 - **Relacionado:** [ADR 0001](0001-autenticacao-de-usuario-na-api.md), que introduziu a
