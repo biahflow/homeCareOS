@@ -89,10 +89,25 @@ def sessao() -> Iterator[Session]:
 
 
 @pytest.fixture
-def operadora_id(sessao: Session) -> uuid.UUID:
-    return uuid.UUID(
-        str(sessao.execute(text("select id from operadoras where codigo = 'UNIMED'")).scalar_one())
-    )
+def operadora_id(sessao: Session) -> Iterator[uuid.UUID]:
+    """Operadora exclusiva do teste — nunca uma operadora do seed (`UNIMED`).
+
+    Uma operadora seedada é compartilhada com o banco de desenvolvimento: os
+    testes que filtram por `operadora_id` e comparam o total com o tamanho da
+    própria fixture (`test_listar_pendencias_filtra_por_operadora_traz_todas` e
+    vizinhos) quebram com qualquer pendência real daquela operadora, contra o
+    que o docstring do módulo promete. Criar uma operadora só do teste — igual
+    já faz a fixture `ciclo` mais abaixo — mantém o filtro por operadora um
+    recorte fechado sem precisar enfraquecer as asserções.
+    """
+    operadora = Operadora(nome="Operadora Pendências Teste", codigo=f"PEND-{uuid.uuid4()}")
+    sessao.add(operadora)
+    sessao.commit()
+
+    yield operadora.id
+
+    sessao.execute(text("delete from operadoras where id = :id"), {"id": operadora.id})
+    sessao.commit()
 
 
 @pytest.fixture
