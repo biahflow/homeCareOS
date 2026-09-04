@@ -22,6 +22,7 @@ import type {
   MfaConfirmarParams,
   MfaDesativarParams,
   MfaIniciarOut,
+  MfaReemitirCodigosParams,
   MfaVerificarParams,
   Operadora,
   PendenciaItem,
@@ -256,7 +257,11 @@ export async function confirmarMfa(
  *
  * A operação é destrutiva e silenciosa: apaga o segredo, a flag e **os códigos
  * de recuperação**. Não há como voltar atrás; religar é {@link iniciarMfa} de
- * novo, com segredo e códigos novos.
+ * novo, com segredo e códigos novos — e o aplicativo autenticador precisa ser
+ * cadastrado de novo, porque o segredo é outro.
+ *
+ * Quem só quer uma lista nova de códigos de recuperação **não precisa passar
+ * por aqui**: {@link reemitirCodigosMfa} troca a lista sem tocar no segredo.
  */
 export async function desativarMfa(baseUrl: string, params: MfaDesativarParams): Promise<void> {
   await requisitar(baseUrl, "/api/auth/mfa/desativar", {
@@ -264,6 +269,42 @@ export async function desativarMfa(baseUrl: string, params: MfaDesativarParams):
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
+}
+
+/**
+ * `POST /api/auth/mfa/reemitir-codigos`: troca **toda** a lista de códigos de
+ * recuperação por uma nova, sem desativar o segundo fator (issue #39).
+ *
+ * O segredo TOTP não muda: o aplicativo autenticador cadastrado continua
+ * valendo, e não há QR code para escanear de novo.
+ *
+ * **Os códigos anteriores morrem, usados e não usados.** Quem chama precisa
+ * dizer isso a quem confirma **antes** da confirmação, e não depois: alguém que
+ * guardou a lista velha num cofre precisa saber que ela virou papel sem valor.
+ *
+ * A resposta é {@link MfaCodigosRecuperacaoOut} e vale para ela tudo o que vale
+ * para a da ativação: é a única vez que estes códigos existem em claro, e não
+ * se persiste nada disso no cliente.
+ *
+ * 422 é o **mesmo** para senha errada e para código errado, de propósito — não
+ * tente deduzir qual dos dois falhou nem separar as mensagens. 409 significa
+ * que o segundo fator não está ativado nesta conta (não há lista a reemitir).
+ *
+ * 429 merece atenção de quem desenha a tela: as falhas aqui contam em
+ * `tentativas_login` com o e-mail da pessoa, como as de `/mfa/verificar`.
+ * Errar senha ou código muitas vezes **tranca o login dela** pela janela
+ * configurada — é o preço de não deixar esta rota ser sondada de graça.
+ */
+export async function reemitirCodigosMfa(
+  baseUrl: string,
+  params: MfaReemitirCodigosParams,
+): Promise<MfaCodigosRecuperacaoOut> {
+  const response = await requisitar(baseUrl, "/api/auth/mfa/reemitir-codigos", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return (await response.json()) as MfaCodigosRecuperacaoOut;
 }
 
 /**

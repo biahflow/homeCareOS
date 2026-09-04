@@ -1,25 +1,24 @@
 "use client";
 
-import { ArrowLeft, ShieldOff } from "lucide-react";
+import { ArrowLeft, KeyRound } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useId, useState } from "react";
-import { ApiError, desativarMfa } from "@homecareos/contracts";
+import { ApiError, reemitirCodigosMfa } from "@homecareos/contracts";
 import { API_BASE_URL } from "@/lib/env";
 
 /**
  * Mensagem do 422 — **uma só**, cobrindo senha errada e código errado.
  *
- * A API responde o mesmo para os dois de propósito (`MfaDesativarRequest`:
- * "duas mensagens diriam qual dos dois o atacante já tem"). Separar aqui, ou
- * deduzir qual falhou, desfaria essa proteção justamente na tela em que ela
- * importa: quem chegou até aqui com a sessão de outra pessoa está tentando
- * descobrir o que ainda lhe falta.
+ * A API responde o mesmo para os dois de propósito, e aqui a razão é ainda mais
+ * direta que na desativação: o que sai desta rota é uma lista de credenciais
+ * que *pulam* o segundo fator. Dizer qual metade falhou entregaria a quem está
+ * com a sessão de outra pessoa exatamente o que ainda lhe falta.
  */
 const MENSAGEM_RECUSADO =
   "Senha ou código não conferem. A API não informa qual dos dois falhou — confira os dois e tente de novo.";
 
 const MENSAGEM_CAMPOS = "Informe a senha e o código do aplicativo autenticador.";
-const MENSAGEM_INESPERADA = "Falha inesperada ao desativar o segundo fator. Tente novamente.";
+const MENSAGEM_INESPERADA = "Falha inesperada ao emitir os códigos. Tente novamente.";
 
 function mensagemDeErro(erro: unknown): string {
   if (!(erro instanceof ApiError)) {
@@ -28,30 +27,36 @@ function mensagemDeErro(erro: unknown): string {
   if (erro.status === 422) {
     return MENSAGEM_RECUSADO;
   }
+  // 429 e erro de rede chegam com a mensagem da própria API (ou a do cliente),
+  // e ela já é a certa — enriquecer aqui só a afastaria da causa real.
   return erro.message;
 }
 
-export type ResultadoDesativacao = "desativado" | "nao-ativado";
-
 /**
- * Desligar o segundo fator: senha **e** código atual, com confirmação explícita.
+ * Emitir uma lista nova de códigos de recuperação, sem desligar o segundo fator.
  *
- * A API exige os dois fatores, e não é excesso de zelo: com só o código, uma
- * sessão sequestrada desligaria sozinha a proteção que existe contra ela; com
- * só a senha, bastaria a senha vazada — que é a hipótese que faz alguém ativar
- * MFA. O formulário não tenta compensar nem suavizar isso.
+ * A API exige senha **e** código atual, e não é excesso de zelo: o que volta
+ * desta chamada entra no login no lugar do aplicativo autenticador. Uma sessão
+ * sequestrada que pudesse pedir códigos novos viraria acesso permanente à
+ * conta, imune à troca de senha e ao próprio MFA.
  *
- * A confirmação marcada à mão existe porque a operação é destrutiva e
- * silenciosa: ela apaga o segredo **e os códigos de recuperação**, responde 204
- * sem dizer o que levou junto, e não tem desfazer. O que a pessoa precisa saber
- * antes de submeter está do lado do botão que submete, não numa tela anterior
- * que ela já esqueceu.
+ * **O aviso vem antes da confirmação, não depois.** Emitir a lista nova mata a
+ * antiga inteira — inclusive os códigos que nunca foram usados. Quem guardou a
+ * lista velha num cofre, num gerenciador de senhas ou num papel dentro da
+ * carteira precisa saber, *antes* de clicar, que ela vira papel sem valor. Por
+ * isso o texto está do lado do botão que submete, com confirmação marcada à
+ * mão, e não numa tela anterior que a pessoa já esqueceu.
+ *
+ * O segredo TOTP **não** muda: o aplicativo cadastrado continua valendo e não
+ * há QR code novo para escanear.
  */
-export function FormularioDesativarMfa({
-  onConcluido,
+export function FormularioReemitirCodigos({
+  onEmitidos,
+  onNaoAtivado,
   onCancelar,
 }: {
-  onConcluido: (resultado: ResultadoDesativacao) => void;
+  onEmitidos: (codigos: string[]) => void;
+  onNaoAtivado: () => void;
   onCancelar: () => void;
 }) {
   const router = useRouter();
@@ -78,8 +83,10 @@ export function FormularioDesativarMfa({
     setErro(null);
     setEnviando(true);
     try {
-      await desativarMfa(API_BASE_URL, { senha, codigo });
-      onConcluido("desativado");
+      const { codigos } = await reemitirCodigosMfa(API_BASE_URL, { senha, codigo });
+      // Daqui em diante estes códigos existem em um lugar só: este array, nesta
+      // aba. Quem recebe é responsável por mostrá-los e descartá-los.
+      onEmitidos(codigos);
       // `enviando` continua ligado de propósito: quem chama já trocou de passo.
     } catch (causa) {
       if (causa instanceof ApiError && causa.status === 401) {
@@ -91,9 +98,10 @@ export function FormularioDesativarMfa({
       }
       setEnviando(false);
       if (causa instanceof ApiError && causa.status === 409) {
-        // O segundo fator não estava ativado. Como `GET /api/auth/eu` não expõe
-        // esse campo, este 409 é informação nova — e não erro de quem digitou.
-        onConcluido("nao-ativado");
+        // O segundo fator não estava ativado — não há lista a reemitir. Como
+        // `GET /api/auth/eu` não expõe esse campo, este 409 é informação nova, e
+        // não erro de quem digitou.
+        onNaoAtivado();
         return;
       }
       setErro(mensagemDeErro(causa));
@@ -103,25 +111,23 @@ export function FormularioDesativarMfa({
   return (
     <section className="panel">
       <div className="panel-heading">
-        <h2>Desativar o segundo fator</h2>
-        <span className="state state--3">Ação destrutiva</span>
+        <h2>Emitir códigos de recuperação novos</h2>
+        <span className="state state--2">Invalida os códigos atuais</span>
       </div>
 
       <div className="grid gap-4">
         <p className="text-sm leading-6 text-muted">
-          Desligar o segundo fator faz o login voltar a exigir apenas a senha. Os seus{" "}
-          <strong className="text-ink">códigos de recuperação atuais deixam de valer</strong> e não
-          podem ser recuperados: religar o segundo fator gera um segredo novo e uma lista nova, e o
-          aplicativo autenticador precisa ser cadastrado outra vez.
+          A lista nova substitui a atual por inteiro. O segredo do aplicativo autenticador não muda:
+          nada precisa ser cadastrado de novo, e o login segue pedindo os mesmos seis dígitos.
         </p>
 
-        {/* O `<span>` não é enfeite: `.alert--info` é um flex container, e um
+        {/* O `<span>` não é enfeite: `.alert--error` é um flex container, e um
             `<strong>` solto viraria uma coluna à parte no meio da frase. */}
-        <p className="alert--info">
+        <p className="alert--error">
           <span>
-            Se você só quer códigos de recuperação novos, não precisa desligar nada: cancele e use{" "}
-            <strong>Emitir códigos novos</strong>, na tela de segundo fator ativado. A lista muda e
-            o aplicativo autenticador continua valendo.
+            <strong>Os seus códigos de recuperação atuais deixam de valer na hora</strong> —
+            inclusive os que você nunca usou. Se você guardou a lista em um papel, num cofre ou no
+            gerenciador de senhas, ela vira papel sem valor assim que você confirmar aqui.
           </span>
         </p>
 
@@ -158,6 +164,9 @@ export function FormularioDesativarMfa({
               className="field"
               disabled={enviando}
             />
+            <p className="text-xs text-muted">
+              Os seis dígitos do aplicativo — um código de recuperação não serve aqui.
+            </p>
           </div>
 
           <label htmlFor={cienteId} className="flex items-start gap-2.5 text-sm text-ink">
@@ -169,7 +178,7 @@ export function FormularioDesativarMfa({
               disabled={enviando}
               className="mt-0.5 size-4 accent-brand-500"
             />
-            Entendo que os códigos de recuperação atuais deixam de valer.
+            Entendo que os meus códigos de recuperação atuais deixam de valer.
           </label>
 
           {erro && (
@@ -179,16 +188,9 @@ export function FormularioDesativarMfa({
           )}
 
           <div className="flex flex-wrap gap-2">
-            <button
-              type="submit"
-              disabled={enviando || !ciente}
-              // Sem `.btn--primary`: a cor de ação principal desta interface
-              // convida ao clique, e este botão não deve convidar. `--color-danger`
-              // já é o vermelho do tema (ver `globals.css`).
-              className="btn bg-danger text-white hover:bg-red-800"
-            >
-              <ShieldOff size={16} />
-              {enviando ? "Desativando…" : "Desativar segundo fator"}
+            <button type="submit" disabled={enviando || !ciente} className="btn btn--primary">
+              <KeyRound size={16} />
+              {enviando ? "Emitindo…" : "Emitir códigos novos"}
             </button>
             <button
               type="button"
@@ -200,6 +202,13 @@ export function FormularioDesativarMfa({
               Cancelar
             </button>
           </div>
+          {/* A consequência é real e não aparece em lugar nenhum se não for dita
+              aqui: a API conta as falhas desta rota em `tentativas_login`, com o
+              e-mail da pessoa — as mesmas linhas que trancam o login. */}
+          <p className="text-xs text-muted">
+            Errar a senha ou o código várias vezes seguidas bloqueia temporariamente o login desta
+            conta, como acontece na tela de entrada.
+          </p>
         </form>
       </div>
     </section>

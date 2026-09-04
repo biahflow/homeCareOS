@@ -536,3 +536,217 @@ def test_chave_de_maquina_nao_configura_segundo_fator(api: TestClient) -> None:
     resposta = api.post("/api/auth/mfa/iniciar", headers=AUTH_HEADERS)
 
     assert resposta.status_code == 403
+
+
+# --- 13-20. reemissão dos códigos de recuperação (issue #39) ------------------
+
+REEMITIR = "/api/auth/mfa/reemitir-codigos"
+
+
+def _reemitir(api: TestClient, *, senha: str, codigo: str) -> Response:
+    return api.post(REEMITIR, json={"senha": senha, "codigo": codigo})
+
+
+def _hashes_de(sessao: Session, usuario: Usuario) -> set[str]:
+    return set(
+        sessao.scalars(
+            select(CodigoRecuperacaoMfa.codigo_hash).where(
+                CodigoRecuperacaoMfa.usuario_id == usuario.id
+            )
+        ).all()
+    )
+
+
+def test_reemitir_devolve_lista_nova_sem_tocar_no_segredo(
+    api: TestClient, sessao: Session, usuario: Usuario
+) -> None:
+    """O caminho feliz inteiro: lista nova, segredo intacto, só hash no banco.
+
+    O segredo intacto é o ponto da feature — reemitir código de recuperação
+    **não** é rotacionar o segundo fator, e obrigar a reconfigurar o aplicativo
+    devolveria o custo que esta rota existe para eliminar.
+    """
+    segredo, antigos = _ativar_mfa(api, usuario)
+
+    resposta = _reemitir(api, senha=SENHA_DE_TESTE, codigo=_codigo(segredo, delta=1))
+
+    assert resposta.status_code == 200
+    novos = resposta.json()["codigos"]
+    assert len(novos) == CODIGOS_ESPERADOS
+    assert len(set(novos)) == CODIGOS_ESPERADOS
+    assert set(novos).isdisjoint(antigos)
+
+    sessao.refresh(usuario)
+    # O segredo é o mesmo: o aplicativo autenticador da pessoa continua valendo.
+    assert usuario.mfa_secret == segredo
+    assert usuario.mfa_ativado is True
+
+    # E o banco continua guardando só hash — nem os novos nem os antigos em claro.
+    hashes = _hashes_de(sessao, usuario)
+    assert len(hashes) == CODIGOS_ESPERADOS
+    for codigo in [*novos, *antigos]:
+        assert codigo not in hashes
+
+
+def test_reemitir_mata_os_codigos_antigos_inclusive_os_nunca_usados(
+    api: TestClient, usuario: Usuario
+) -> None:
+    """Critério central: um código antigo que sobrevivesse faria a reemissão
+    **aumentar** a superfície de ataque em vez de reduzi-la — quem troca a lista
+    porque ela pode ter vazado ficaria com a lista vazada valendo do mesmo jeito.
+    """
+    segredo, antigos = _ativar_mfa(api, usuario)
+    assert _reemitir(api, senha=SENHA_DE_TESTE, codigo=_codigo(segredo, delta=1)).status_code == (
+        200
+    )
+
+    api.cookies.clear()
+    assert _login(api, usuario).status_code == 200
+    # `antigos[0]` nunca foi usado: morreu pela reemissão, não pelo uso único.
+    recusado = api.post("/api/auth/mfa/verificar", json={"codigo": antigos[0]})
+
+    assert recusado.status_code == 401
+    assert api.get("/api/operadoras").status_code == 401
+    # E não é só o primeiro da lista: a lista inteira morreu.
+    assert api.post("/api/auth/mfa/verificar", json={"codigo": antigos[-1]}).status_code == 401
+
+
+def test_codigo_reemitido_funciona_no_login_e_continua_de_uso_unico(
+    api: TestClient, usuario: Usuario
+) -> None:
+    """A lista nova precisa ser tão boa quanto a da ativação — inclusive no uso
+    único, que é o que impede um código anotado de virar credencial permanente."""
+    segredo, _ = _ativar_mfa(api, usuario)
+    novos = _reemitir(api, senha=SENHA_DE_TESTE, codigo=_codigo(segredo, delta=1)).json()["codigos"]
+
+    api.cookies.clear()
+    assert _login(api, usuario).status_code == 200
+    primeira = api.post("/api/auth/mfa/verificar", json={"codigo": novos[0]})
+
+    assert primeira.status_code == 200
+    assert api.get("/api/operadoras").status_code == 200
+
+    assert _login(api, usuario).status_code == 200
+    assert api.post("/api/auth/mfa/verificar", json={"codigo": novos[0]}).status_code == 401
+    # O resto da lista continua valendo: o uso único é do código, não da lista.
+    assert api.post("/api/auth/mfa/verificar", json={"codigo": novos[1]}).status_code == 200
+
+
+def test_reemitir_recusa_senha_errada_e_codigo_errado_sem_dizer_qual(
+    api: TestClient, sessao: Session, usuario: Usuario
+) -> None:
+    """Duas mensagens diriam a quem está com a sessão de outra pessoa qual
+    metade da credencial ele já tem — e esta rota emite bypass do segundo fator."""
+    segredo, _ = _ativar_mfa(api, usuario)
+    codigo_valido = _codigo(segredo, delta=1)
+    antes = _hashes_de(sessao, usuario)
+
+    senha_errada = _reemitir(api, senha="nao-e-a-senha", codigo=codigo_valido)
+    codigo_errado = _reemitir(api, senha=SENHA_DE_TESTE, codigo=_codigo_errado(segredo))
+
+    assert senha_errada.status_code == 422
+    assert codigo_errado.status_code == 422
+    assert senha_errada.json() == codigo_errado.json()
+    # Nada foi trocado: a recusa não pode custar a lista de quem digitou errado.
+    assert _hashes_de(sessao, usuario) == antes
+
+
+def test_reemitir_nao_aceita_o_mesmo_codigo_totp_duas_vezes(
+    api: TestClient, sessao: Session, usuario: Usuario
+) -> None:
+    """Anti-replay: sem gravar o passo aceito, o código visto por cima do ombro
+    valeria durante toda a janela de tolerância — aqui, para emitir oito
+    credenciais de bypass."""
+    segredo, _ = _ativar_mfa(api, usuario)
+    codigo = _codigo(segredo, delta=1)
+
+    primeira = _reemitir(api, senha=SENHA_DE_TESTE, codigo=codigo)
+    depois_da_primeira = _hashes_de(sessao, usuario)
+    segunda = _reemitir(api, senha=SENHA_DE_TESTE, codigo=codigo)
+
+    assert primeira.status_code == 200
+    assert segunda.status_code == 422
+    sessao.refresh(usuario)
+    assert usuario.mfa_ultimo_passo is not None
+    # A lista emitida na primeira chamada sobrevive à recusa da segunda.
+    assert _hashes_de(sessao, usuario) == depois_da_primeira
+
+
+def test_reemitir_sem_mfa_ativo_responde_409(api: TestClient, usuario: Usuario) -> None:
+    """Sem segundo fator não há o que reemitir — mesmo espírito do 409 de
+    `/mfa/iniciar` com MFA já ativado."""
+    assert _login(api, usuario).status_code == 200
+
+    resposta = _reemitir(api, senha=SENHA_DE_TESTE, codigo="000000")
+
+    assert resposta.status_code == 409
+
+
+def test_reemitir_com_chave_de_maquina_responde_403(api: TestClient) -> None:
+    """Chave de máquina não tem segundo fator para reemitir: 403, e não 401 — a
+    credencial é válida, a operação é que não se aplica a ela."""
+    api.cookies.clear()
+
+    resposta = api.post(REEMITIR, json={"senha": "x", "codigo": "000000"}, headers=AUTH_HEADERS)
+
+    assert resposta.status_code == 403
+
+
+def test_reemitir_sem_sessao_responde_401(api: TestClient) -> None:
+    api.cookies.clear()
+
+    resposta = _reemitir(api, senha=SENHA_DE_TESTE, codigo="000000")
+
+    assert resposta.status_code == 401
+
+
+def test_reemitir_e_travada_por_tentativa_e_nao_so_contada(
+    settings: Settings, sessao: Session, usuario: Usuario
+) -> None:
+    """Regressão: a rota que emite bypass do segundo fator não pode ser sondada
+    de graça.
+
+    O freio é o mesmo de `/mfa/verificar` — `avaliar_bloqueio` antes de conferir,
+    `registrar_tentativa` nos dois desfechos —, e a consequência precisa estar
+    dita em algum lugar que reprova se ela mudar: **as falhas daqui contam em
+    `tentativas_login` com o e-mail da pessoa e trancam o login dela**.
+    """
+    limiar = 3
+    app.dependency_overrides[get_settings] = lambda: settings.model_copy(
+        update={
+            "api_keys": TEST_API_KEY,
+            "environment": "local",
+            "login_atraso_base_segundos": 0.0,
+            "login_atraso_maximo_segundos": 0.0,
+            "login_falhas_para_travar_conta": limiar,
+        }
+    )
+    try:
+        cliente = TestClient(app)
+        segredo, _ = _ativar_mfa(cliente, usuario)
+        codigo = _codigo(segredo, delta=1)
+
+        def _falhas() -> int:
+            return (
+                sessao.scalar(
+                    select(func.count())
+                    .select_from(TentativaLogin)
+                    .where(
+                        TentativaLogin.email_tentado == usuario.email,
+                        TentativaLogin.sucesso.is_(False),
+                    )
+                )
+                or 0
+            )
+
+        antes = _falhas()
+        for _ in range(limiar):
+            assert _reemitir(cliente, senha="nao-e-a-senha", codigo=codigo).status_code == 422
+        assert _falhas() == antes + limiar
+
+        bloqueada = _reemitir(cliente, senha=SENHA_DE_TESTE, codigo=codigo)
+
+        assert bloqueada.status_code == 429
+        assert bloqueada.headers["retry-after"]
+    finally:
+        app.dependency_overrides.clear()

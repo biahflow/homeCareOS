@@ -63,6 +63,7 @@ from homecareos.auth.schema import (
     MfaDesativarRequest,
     MfaIniciarOut,
     MfaPendenteOut,
+    MfaReemitirCodigosRequest,
     MfaVerificarRequest,
     Principal,
     RedefinirSenhaRequest,
@@ -773,3 +774,125 @@ def desativar_mfa(
         delete(CodigoRecuperacaoMfa).where(CodigoRecuperacaoMfa.usuario_id == usuario.id)
     )
     session.commit()
+
+
+@router.post(
+    "/mfa/reemitir-codigos",
+    response_model=MfaCodigosRecuperacaoOut,
+    summary="Emite uma lista nova de códigos de recuperação (exige senha E código atual)",
+    description=(
+        "Substitui **todos** os códigos de recuperação da conta — usados e não "
+        "usados — por uma lista nova, devolvida em claro **uma única vez**. O "
+        "segredo TOTP não muda: o app autenticador cadastrado continua valendo. "
+        "Exige os **dois** fatores no corpo: senha e código do app. Senha ou "
+        "código errado: 422 com a mesma mensagem, e a tentativa conta para o "
+        "bloqueio por força bruta. MFA não ativado: 409."
+    ),
+)
+def reemitir_codigos_mfa(
+    corpo: MfaReemitirCodigosRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(principal_atual)],
+    session: Annotated[Session, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> MfaCodigosRecuperacaoOut:
+    """Lista nova de códigos de recuperação, sem desativar o segundo fator (issue #39).
+
+    Até aqui, quem perdia a lista tinha um caminho só: desativar e ativar de
+    novo — segredo novo, QR code novo, app reconfigurado. O custo era alto o
+    bastante para a pessoa adiar, e adiar significa ficar sem a saída de
+    emergência justamente enquanto o MFA está ligado.
+
+    **Reautenticação, e não "a sessão está válida".** O que sai daqui é
+    credencial de *bypass permanente* do segundo fator: quem tem um destes
+    códigos entra sem o app autenticador. Uma sessão sequestrada que pudesse
+    chamar esta rota viraria acesso permanente à conta, imune à troca de senha
+    e ao próprio MFA. Por isso ela exige senha **e** código atual, exatamente
+    como `/mfa/desativar` — as duas operações têm o mesmo peso.
+
+    Senha errada e código errado respondem o **mesmo** 422, pela mesma razão de
+    `/mfa/desativar`: duas mensagens diriam a quem está com a sessão de outra
+    pessoa qual metade da credencial ele já tem.
+
+    O `codigo` é só o TOTP: código de recuperação **não** é aceito aqui (ver
+    `MfaReemitirCodigosRequest`). Um código vazado que gerasse oito novos
+    desfaria o "uso único" da lista inteira.
+
+    **Todos os códigos antigos morrem, usados e não usados**, no mesmo `delete`
+    que precede o `insert` — é o mesmo par de `confirmar_mfa`, e na mesma
+    transação. Preservar um código antigo faria a reemissão *aumentar* a
+    superfície de ataque: quem quer trocar a lista porque ela pode ter vazado
+    ficaria com a lista vazada valendo do mesmo jeito. A atomicidade também não
+    é detalhe — apagar e falhar antes de gravar deixaria a pessoa sem código
+    nenhum e sem saber disso.
+
+    O segredo TOTP **não** é tocado: reemitir código de recuperação não é
+    rotacionar o segundo fator, e obrigar a reconfigurar o app seria devolver o
+    custo que esta rota existe para eliminar.
+
+    O passo TOTP aceito vai para `mfa_ultimo_passo` no mesmo commit, como em
+    `/mfa/verificar` e `/mfa/confirmar`: o código gasto aqui não pode servir
+    para o login em seguida. (`/mfa/desativar` não grava o passo porque zera o
+    campo — lá não sobra segundo fator para replicar.)
+
+    **O freio da issue #33 vale aqui**, consultado antes de qualquer Argon2 e
+    registrado nos dois desfechos, como em `/mfa/verificar`. A consequência
+    precisa estar dita: `registrar_tentativa` grava em `tentativas_login` com o
+    e-mail da pessoa, e essas linhas contam para a trava de conta — **errar a
+    senha ou o código muitas vezes aqui tranca o login dela**. É o preço de não
+    deixar seis dígitos serem sondados de graça numa rota que emite bypass do
+    segundo fator, e é o mesmo comportamento que `/mfa/verificar` já tem.
+
+    O 409 de MFA não ativado vem **antes** do freio de propósito: ele não olha
+    credencial nenhuma e não custa Argon2, e quem chama já sabe o estado da
+    própria conta — responder 429 a quem nem tem o que reemitir só esconderia o
+    erro real de quem integra.
+    """
+    agora = datetime.now(UTC)
+    usuario = _usuario_da_sessao(principal, session)
+    if not usuario.mfa_ativado or usuario.mfa_secret is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=MENSAGEM_MFA_NAO_ATIVO,
+        )
+
+    ip = protecao.ip_do_request(request, settings)
+    bloqueio = protecao.avaliar_bloqueio(
+        session, email=usuario.email, ip=ip, settings=settings, agora=agora
+    )
+    if bloqueio is not None:
+        raise _bloqueado(bloqueio)
+
+    # Os dois são conferidos sempre, e o desfecho é decidido depois: sair no
+    # primeiro erro faria o tempo de resposta dizer se a senha estava certa.
+    senha_ok = senhas.verificar(usuario.senha_hash, corpo.senha)
+    passo = mfa.verificar_codigo(
+        usuario.mfa_secret,
+        corpo.codigo,
+        agora=agora,
+        janela=settings.mfa_janela_passos,
+        ultimo_passo=usuario.mfa_ultimo_passo,
+    )
+    if not senha_ok or passo is None:
+        protecao.registrar_tentativa(session, email=usuario.email, ip=ip, sucesso=False)
+        session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=MENSAGEM_MFA_CODIGO_INVALIDO,
+        )
+
+    codigos = mfa.gerar_codigos_recuperacao(settings.mfa_codigos_recuperacao)
+    session.execute(
+        delete(CodigoRecuperacaoMfa).where(CodigoRecuperacaoMfa.usuario_id == usuario.id)
+    )
+    for codigo in codigos:
+        session.add(
+            CodigoRecuperacaoMfa(
+                usuario_id=usuario.id,
+                codigo_hash=senhas.gerar_hash(mfa.normalizar_codigo_recuperacao(codigo)),
+            )
+        )
+    usuario.mfa_ultimo_passo = passo
+    protecao.registrar_tentativa(session, email=usuario.email, ip=ip, sucesso=True)
+    session.commit()
+    return MfaCodigosRecuperacaoOut(codigos=codigos)
