@@ -1,10 +1,14 @@
 import { ApiError } from "./erros";
 import type {
   AlertaItem,
+  AtualizarCanalParams,
   AtualizarPendenciaParams,
   AtualizarUsuarioParams,
+  AuditoriaCanalItem,
   BaselineOut,
   BaselineUpsert,
+  CanalAlerta,
+  CanalOut,
   CriarUsuarioParams,
   DocumentoDetalhe,
   DocumentoListItem,
@@ -13,6 +17,7 @@ import type {
   FiltrosConferencia,
   LinhaConferencia,
   ListarAlertasParams,
+  ListarAuditoriaCanaisParams,
   ListarDocumentosParams,
   ListarPendenciasParams,
   ListarUsuariosParams,
@@ -1062,4 +1067,156 @@ export async function listarAlertas(
     opcoes,
   );
   return (await response.json()) as RespostaPaginada<AlertaItem>;
+}
+
+/* Canais de alerta — `/api/alertas/canais` (ADR 0006, parte 2). */
+
+const CAMINHO_CANAIS_ALERTA = "/api/alertas/canais";
+
+/**
+ * `GET /api/alertas/canais`: o estado de cada canal de alerta.
+ *
+ * **Leem `coordenador` e `gestor`** — `main.py` monta `canais_alerta_router`
+ * com `exigir_papel(Papel.COORDENADOR, Papel.GESTOR)`, e conferente recebe
+ * **403** já nesta listagem, como em `/api/alertas`. Escrever é só do
+ * coordenador; ver {@link atualizarCanal}.
+ *
+ * **Não é paginado, e não é omissão**: o número de itens é o número de canais
+ * implementados, fechado por `alerts/schema.Canal`. A resposta traz **todos**
+ * eles, inclusive os que não têm linha na tabela — nesse caso `habilitado` é
+ * `false`, que é como a varredura os lê. Um canal que sumisse da lista seria
+ * indistinguível de um canal que ninguém olhou.
+ *
+ * **Cada item traz dois booleanos, e quem exibe precisa dos dois.** Ver
+ * {@link CanalOut}: `habilitado` sem `disponivel` faz a tela afirmar que um
+ * canal envia quando ele não tem credencial para enviar.
+ *
+ * O que fazer com cada erro:
+ *
+ * - **401** — a sessão acabou depois de o layout tê-la validado: mande para o
+ *   login, como o resto da área logada.
+ * - **403** — o papel não lê canais (conferente, ou papel rebaixado no servidor
+ *   entre a leitura de quem é a pessoa e esta chamada). Não há pedaço desta
+ *   tela que sobreviva sem a listagem: a saída é a mesma da recusa por papel, e
+ *   não um erro de servidor.
+ * - **0** (rede) e **5xx** — **não vire "nenhum canal"**. Uma tela vazia aqui
+ *   afirma que a operação não tem canal nenhum ligado, que é a pior conclusão
+ *   errada possível nesta tela. Deixe o erro subir.
+ *
+ * `cache: "no-store"` porque o estado é editável por outro coordenador a
+ * qualquer momento: uma resposta em cache mostraria como ligado um canal que
+ * acabou de ser desligado — e é justamente essa pergunta que traz alguém aqui.
+ */
+export async function listarCanais(
+  baseUrl: string,
+  opcoes?: OpcoesRequisicao,
+): Promise<CanalOut[]> {
+  const response = await requisitar(
+    baseUrl,
+    CAMINHO_CANAIS_ALERTA,
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as CanalOut[];
+}
+
+/**
+ * `PATCH /api/alertas/canais/{canal}`: liga ou desliga um canal.
+ *
+ * **Exige o papel `coordenador`**, declarado no próprio endpoint por cima da
+ * regra do router: ler o estado dos canais é acompanhar a operação (coordenador
+ * e gestor), ligar e desligar é executá-la, e quem executa é o coordenador (ADR
+ * 0006, que manteve a matriz do ADR 0001 intacta). **O gestor recebe 403 aqui e
+ * lê normalmente em {@link listarCanais}** — esconder o controle para ele é
+ * ergonomia; a autoridade é este 403, e a tela precisa continuar de pé quando
+ * ele chega.
+ *
+ * **Desligar um canal silencia a operação.** Nenhum aviso sai por ele enquanto
+ * estiver desligado, e a ausência de alerta é indistinguível de "não havia o
+ * que alertar" — ninguém repara. Quem construir o controle precisa dizer isso
+ * **antes** de executar, e tratar desligar com o peso de desativar um usuário.
+ *
+ * **Ligar não é o mesmo que passar a enviar.** A resposta traz `disponivel`
+ * junto justamente para isso: um canal ligado sem credencial no `.env` continua
+ * sem enviar nada. Mostre o `disponivel` que voltou; não assuma que o
+ * `habilitado` recém-gravado basta.
+ *
+ * A mudança é auditada (ator, canal, de/para, quando) e aparece em
+ * {@link listarAuditoriaCanais}. **Reenviar o valor que já está no banco não
+ * gera registro** — o backend decide isso, sem erro e sem aviso: a resposta é a
+ * mesma de uma mudança de verdade.
+ *
+ * O que fazer com cada erro:
+ *
+ * - **401** — sessão encerrada: mande para o login.
+ * - **403** — o papel não altera canais. Insistir nunca muda nada; a mensagem
+ *   da API já diz o que houve, e o estado na tela continua válido para leitura.
+ * - **422** — canal fora de `alerts/schema.Canal`, recusado pelo FastAPI antes
+ *   do handler. Inalcançável por uma tela que só oferece os canais que
+ *   {@link listarCanais} devolveu.
+ */
+export async function atualizarCanal(
+  baseUrl: string,
+  canal: CanalAlerta,
+  params: AtualizarCanalParams,
+  opcoes?: OpcoesRequisicao,
+): Promise<CanalOut> {
+  const response = await requisitar(
+    baseUrl,
+    `${CAMINHO_CANAIS_ALERTA}/${canal}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    },
+    opcoes,
+  );
+  return (await response.json()) as CanalOut;
+}
+
+/**
+ * `GET /api/alertas/canais/auditoria`: quem ligou ou desligou qual canal, e
+ * quando.
+ *
+ * Mesma autorização de {@link listarCanais} — coordenador e gestor leem.
+ *
+ * **É esta rota que responde "desde quando estamos sem aviso?"**, a pergunta
+ * que vai ser feita quando alguém reparar que parou de receber. Sem ela, "quem
+ * silenciou a operação?" não tem resposta possível, e é por isso que o ADR 0006
+ * tornou a auditoria obrigatória em vez de opcional.
+ *
+ * Paginado, do evento mais recente para o mais antigo; a ordem é do servidor e
+ * **não é parametrizável**. `paginacao.total` é o total **filtrado** — é ele, e
+ * não `data.length`, que diz se há próxima página.
+ *
+ * **Histórico vazio não significa que ninguém mexeu no passado, e também não
+ * significa que mexeram.** O estado semeado pela migração não gera linha aqui
+ * (não houve mudança), e é por isso que {@link CanalOut.atualizado_por} nulo e
+ * histórico vazio andam juntos num canal que ninguém tocou. Não conclua da
+ * ausência de linhas nada além da ausência de linhas.
+ *
+ * Erros: os mesmos de {@link listarCanais}, com uma diferença de tratamento —
+ * esta listagem **não** é o corpo da tela. Quem chama pode mostrar a falta do
+ * histórico sem derrubar o estado dos canais, que é o dado principal.
+ *
+ * `cache: "no-store"` pelo mesmo motivo de {@link listarCanais}.
+ */
+export async function listarAuditoriaCanais(
+  baseUrl: string,
+  params: ListarAuditoriaCanaisParams = {},
+  opcoes?: OpcoesRequisicao,
+): Promise<RespostaPaginada<AuditoriaCanalItem>> {
+  const response = await requisitar(
+    baseUrl,
+    `${CAMINHO_CANAIS_ALERTA}/auditoria${queryString({
+      canal: params.canal,
+      ator_id: params.ator_id,
+      habilitado: params.habilitado,
+      limite: params.limite,
+      offset: params.offset,
+    })}`,
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as RespostaPaginada<AuditoriaCanalItem>;
 }

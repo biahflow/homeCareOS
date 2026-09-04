@@ -46,7 +46,9 @@ const AVISOS: Record<string, string> = {
   "usuarios-restrito":
     "A administração de usuários é do papel de coordenador. Se você precisa cadastrar ou desativar alguém, peça a um coordenador.",
   "alertas-restrito":
-    "O log de alertas de WhatsApp é de coordenador e gestor. Se você precisa saber por que um aviso não chegou, peça a um deles.",
+    "O log de alertas é de coordenador e gestor. Se você precisa saber por que um aviso não chegou, peça a um deles.",
+  "canais-restrito":
+    "Os canais de alerta são de coordenador e gestor. Se você precisa saber se um canal está enviando, peça a um deles.",
 };
 
 /**
