@@ -1,7 +1,9 @@
 import { ApiError } from "./erros";
 import type {
+  AtualizarPendenciaParams,
   EsqueciSenhaParams,
   EuResposta,
+  ListarPendenciasParams,
   LoginParams,
   LoginResposta,
   MfaCodigosRecuperacaoOut,
@@ -9,7 +11,11 @@ import type {
   MfaDesativarParams,
   MfaIniciarOut,
   MfaVerificarParams,
+  Operadora,
+  PendenciaItem,
   RedefinirSenhaParams,
+  RespostaPaginada,
+  ResumoPendencias,
   UploadParams,
   UploadResponse,
   UsuarioOut,
@@ -332,4 +338,148 @@ export async function redefinirSenha(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
+}
+
+/* Pendências e operadoras — a fila de conferência. */
+
+/**
+ * Monta a query string ignorando o que não foi informado.
+ *
+ * `undefined` vira **ausência** do parâmetro, e não a string `"undefined"`: a
+ * API valida cada filtro pelo tipo, então `status=undefined` seria 422 em vez
+ * de "sem filtro" — um erro que aparece só quando alguém navega sem filtrar.
+ */
+function queryString(params: Record<string, string | number | undefined>): string {
+  const busca = new URLSearchParams();
+  for (const [chave, valor] of Object.entries(params)) {
+    if (valor !== undefined) {
+      busca.set(chave, String(valor));
+    }
+  }
+  const texto = busca.toString();
+  return texto === "" ? "" : `?${texto}`;
+}
+
+/**
+ * `GET /api/pendencias`: a página atual da fila de conferência.
+ *
+ * Legível pelos três papéis — quem transiciona é que é restrito, ver
+ * {@link atualizarPendencia}.
+ *
+ * Dois detalhes do contrato que mudam o que a interface deve mostrar:
+ *
+ * - `deadline` filtra por "até esta data **inclusive**": a API converte a data
+ *   para o fim do dia (`time.max`), então `deadline=2026-09-04` inclui o que
+ *   vence às 23h de 4 de setembro.
+ * - `paginacao.total` é o total **filtrado**. Ele não muda entre páginas do
+ *   mesmo filtro, e é ele — não `data.length` — que diz se há próxima página.
+ *
+ * `cache: "no-store"` não é otimização às avessas: a resposta carrega descrição
+ * de problema de prontuário, e uma fila de trabalho compartilhada que volta do
+ * cache mostra a alguém uma pendência que outra pessoa já pegou.
+ */
+export async function listarPendencias(
+  baseUrl: string,
+  params: ListarPendenciasParams = {},
+  opcoes?: OpcoesRequisicao,
+): Promise<RespostaPaginada<PendenciaItem>> {
+  const response = await requisitar(
+    baseUrl,
+    `/api/pendencias${queryString({
+      status: params.status,
+      deadline: params.deadline,
+      operadora_id: params.operadora_id,
+      limite: params.limite,
+      offset: params.offset,
+    })}`,
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as RespostaPaginada<PendenciaItem>;
+}
+
+/**
+ * `GET /api/pendencias/resumo`: as contagens do topo da tela.
+ *
+ * **Não aceita filtro**: o resumo é sempre da operação inteira, e não do que a
+ * listagem está mostrando. Apresentá-lo colado a uma lista filtrada, sem dizer
+ * isso, faz alguém ler os dois números como se fossem do mesmo conjunto.
+ *
+ * Ver {@link ResumoPendencias} para a segunda armadilha: `por_status` conta
+ * tudo, `por_faixa_deadline` só o que está em aberto.
+ */
+export async function resumoPendencias(
+  baseUrl: string,
+  opcoes?: OpcoesRequisicao,
+): Promise<ResumoPendencias> {
+  const response = await requisitar(
+    baseUrl,
+    "/api/pendencias/resumo",
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as ResumoPendencias;
+}
+
+/**
+ * `PATCH /api/pendencias/{id}`: avança a pendência uma etapa do ciclo.
+ *
+ * Três respostas de erro que quem trata **precisa** distinguir, porque exigem
+ * reações diferentes:
+ *
+ * - **403** — o papel `gestor` lê a operação inteira mas não faz conferência
+ *   (ADR 0001), e o endpoint exige conferente ou coordenador. Esconder o botão
+ *   para o gestor é ergonomia; a autoridade é esta resposta, e a interface tem
+ *   que continuar de pé quando ela chega (papel alterado no servidor no meio do
+ *   turno, sessão de outra pessoa, aba antiga).
+ * - **422** — a transição pedida não é válida a partir do status **atual no
+ *   banco**. Na fila de conferência esse é o caso comum, não a exceção: várias
+ *   conferentes trabalham a mesma lista, e a segunda a clicar encontra a
+ *   pendência já movida. Não é erro de quem clicou, e apresentá-lo como falha
+ *   genérica faz a pessoa tentar de novo contra um estado que não existe mais —
+ *   o que cabe é dizer que mudou e recarregar a lista.
+ * - **404** — a pendência não existe (id de uma lista velha).
+ *
+ * O sucesso devolve a pendência **já transicionada**, mas ela não é o retrato
+ * completo da tela: o mesmo PATCH pode mover o documento e disparar a
+ * revalidação, e nada disso aparece aqui. Depois de um sucesso, releia a
+ * listagem em vez de remendar o item na mão.
+ */
+export async function atualizarPendencia(
+  baseUrl: string,
+  pendenciaId: string,
+  params: AtualizarPendenciaParams,
+  opcoes?: OpcoesRequisicao,
+): Promise<PendenciaItem> {
+  const response = await requisitar(
+    baseUrl,
+    `/api/pendencias/${encodeURIComponent(pendenciaId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    },
+    opcoes,
+  );
+  return (await response.json()) as PendenciaItem;
+}
+
+/**
+ * `GET /api/operadoras`: as operadoras cadastradas, para o filtro da fila.
+ *
+ * Lista simples, **sem paginação e sem envelope** — devolve o array direto. Não
+ * é esquecimento da API: são os convênios atendidos pela empresa, um cadastro
+ * pequeno.
+ */
+export async function listarOperadoras(
+  baseUrl: string,
+  opcoes?: OpcoesRequisicao,
+): Promise<Operadora[]> {
+  const response = await requisitar(
+    baseUrl,
+    "/api/operadoras",
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as Operadora[];
 }
