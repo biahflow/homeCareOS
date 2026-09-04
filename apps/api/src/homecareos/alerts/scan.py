@@ -10,7 +10,8 @@ Falha de gateway **não** sai com `1`: ela já está registrada como linha `falh
 em `alertas_enviados`, e uma varredura em que um destinatário falhou e outros
 três foram avisados não é uma execução fracassada. Canal desligado ou sem
 credencial também não: os dois estados saem no JSON, canal a canal, em
-`canais` (ADR 0006).
+`canais` (ADR 0006) — e desde a parte 2 do ADR o "desligado" vem da tabela
+`canais_alerta`, não mais de `ALERTAS_CANAIS`.
 """
 
 from __future__ import annotations
@@ -27,12 +28,15 @@ from homecareos.db.session import get_sessionmaker
 def main() -> int:
     settings = get_settings()
     try:
-        # DENTRO do `try`: `construir_canais` lê `ALERTAS_CANAIS` e levanta
-        # `AlertConfigError` num canal desconhecido. Fora daqui, um typo na
-        # variável viraria traceback e código de saída 1 sem a mensagem que
-        # diz o que consertar — que é justamente o que o cron monitora.
-        canais = construir_canais(settings)
         with get_sessionmaker()() as session:
+            # `construir_canais` lê o liga/desliga da tabela `canais_alerta`
+            # (ADR 0006, parte 2) e por isso precisa da sessão — antes ele vinha
+            # de `ALERTAS_CANAIS` e era resolvido antes de abrir conexão. O
+            # `try` continua envolvendo tudo porque `executar_varredura` valida
+            # a configuração de alertas que sobrou no `.env` (destinatários,
+            # papéis, templates): um typo lá precisa virar mensagem em stderr e
+            # código 1, não traceback — é o que o cron monitora.
+            canais = construir_canais(session, settings)
             resumo = executar_varredura(session, settings, canais)
     except AlertConfigError as exc:
         print(f"configuração de alertas inválida: {exc}", file=sys.stderr)

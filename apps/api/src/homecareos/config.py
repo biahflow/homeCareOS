@@ -133,15 +133,20 @@ class Settings(BaseSettings):
     uazapi_token: str = ""
     alertas_timeout_segundos: float = 10.0
 
-    # Canais de alerta ligados, separados por vírgula (`whatsapp`, `email`).
-    # ADR 0006: liga/desliga é uma pergunta, credencial é outra, e as duas
-    # precisam de resposta afirmativa para um canal enviar. O default preserva
-    # o comportamento anterior ao ADR (só WhatsApp) — ligar e-mail por padrão
-    # seria mandar mensagem que ninguém pediu. Vazio desliga tudo.
+    # OBSOLETA COMO CONFIGURAÇÃO, MANTIDA COMO SEMENTE. Desde a parte 2 do ADR
+    # 0006 o liga/desliga dos canais vive na tabela `canais_alerta`, editável
+    # pelo coordenador em `PATCH /api/alertas/canais/{canal}` e com a mudança
+    # auditada. Editar esta variável depois da migration `a4d6c8b21f37` **não
+    # muda nada** — nem liga, nem desliga canal nenhum.
     #
-    # ASSUNÇÃO/TRANSIÇÃO: o ADR 0006 decide que esta fonte vira uma tabela de
-    # canais editável pelo coordenador, com a mudança auditada. Até lá o
-    # liga/desliga é ambiente, e quem o muda precisa de acesso ao servidor.
+    # Ela permanece por um motivo só: a migration daquela tabela a lê para
+    # semear o estado inicial, e assim quem rodava com `ALERTAS_CANAIS=whatsapp`
+    # não muda de comportamento no deploy. Remover o campo quebraria a migration
+    # em qualquer banco criado do zero.
+    #
+    # A credencial continua no `.env` e continua decidindo: liga/desliga é uma
+    # pergunta (banco), credencial é outra (aqui), e as duas precisam de resposta
+    # afirmativa para um canal enviar.
     alertas_canais: str = "whatsapp"
 
     # Destinatários por tipo de alerta, JSON:
@@ -220,6 +225,16 @@ class Settings(BaseSettings):
     # O piso de um ano NÃO é configurável aqui de propósito — ver
     # `retencao/janelas.MINIMO_AUDITORIA_USUARIOS`.
     retencao_auditoria_usuarios_dias: int = 1825
+    # 1825 dias (5 anos): a auditoria dos canais de alerta (ADR 0006) responde a
+    # "quem desligou o canal, e desde quando a operação está sem aviso?" —
+    # pergunta que aparece em investigação, não no mesmo trimestre do evento.
+    # O número é o MESMO da auditoria administrativa, e alinhar em vez de
+    # inventar um segundo valor é deliberado: não há dado que sustente uma
+    # política diferente. É a mais leve das duas em dado pessoal — guarda o
+    # e-mail do ator (funcionário) e nenhum e-mail de alvo. ASSUNÇÃO deste time,
+    # não requisito confirmado pelo cliente/jurídico. Piso de 365 dias, NÃO
+    # configurável — ver `retencao/janelas.MINIMO_AUDITORIA_CANAIS`.
+    retencao_auditoria_canais_dias: int = 1825
     # Tamanho do lote de apagar por vez, com commit a cada lote (ver
     # `auth/protecao.limpar_tentativas_antigas`). 1000: grande o bastante para
     # não multiplicar round-trips numa tabela com anos de atraso acumulado,

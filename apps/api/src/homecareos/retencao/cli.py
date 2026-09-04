@@ -1,8 +1,9 @@
 """Expurgo por retenção — issue #39: `python -m homecareos.retencao.cli`.
 
-Ferramenta sob demanda para as quatro tabelas que crescem sem limite
+Ferramenta sob demanda para as tabelas que crescem sem limite
 (`tentativas_login`, `tokens_recuperacao`, `alertas_enviados`,
-`auditoria_usuarios`) e não tinham expurgo automático. Chamada por um cron
+`auditoria_usuarios`, `auditoria_canais_alerta`, `consumos_rate_limit`) e não
+tinham expurgo automático. Chamada por um cron
 EXTERNO, como
 `python -m homecareos.alerts.scan` — não há agendador embutido nesta entrega
 (ver `docker-compose.yml`, serviço `api-retencao`, e a seção "Retenção e
@@ -45,9 +46,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m homecareos.retencao.cli",
         description=(
-            "Expurga linhas antigas de tentativas_login, tokens_recuperacao, "
-            "alertas_enviados e auditoria_usuarios, respeitando o piso mínimo de "
-            "retenção de cada uma (issue #39)."
+            "Expurga linhas antigas das tabelas que crescem sem limite "
+            "(tentativas_login, tokens_recuperacao, alertas_enviados, "
+            "auditoria_usuarios, auditoria_canais_alerta, consumos_rate_limit), "
+            "respeitando o piso mínimo de retenção de cada uma (issue #39)."
         ),
     )
     parser.add_argument(

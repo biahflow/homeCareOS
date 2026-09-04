@@ -28,17 +28,24 @@ Tipo **ausente** do mapa é outra coisa, e não é erro: em `ALERTAS_DESTINATARI
 é notificado); em `ALERTAS_PAPEIS_EMAIL` é o jeito de aceitar o default
 declarado (ver `PAPEIS_EMAIL_PADRAO`).
 
-## De onde vem o liga/desliga dos canais — e para onde ele vai
+## `ALERTAS_CANAIS` não decide mais nada
 
-`ALERTAS_CANAIS` é a fonte do liga/desliga **nesta entrega**. O ADR 0006 decide
-que essa fonte passa a ser uma tabela de canais, editável pelo coordenador numa
-tela e com a mudança auditada. Quando isso acontecer, o que muda é
-`canais_habilitados` (e quem a chama, `alerts/canais.construir_canais`): o
-serviço, os templates e o log não sabem de onde veio a resposta.
+O liga/desliga dos canais **saiu daqui** na parte 2 do ADR 0006: ele vive na
+tabela `canais_alerta`, é editável pelo coordenador e a mudança é auditada
+(`alerts/canais_repository.py`). `canais_habilitados` continua existindo por um
+motivo só — foi a **semente** da migration que criou aquela tabela, e é lá que
+ela ainda é lida, para que quem rodava com `ALERTAS_CANAIS=whatsapp` não
+mudasse de comportamento no deploy.
 
-O que **não** muda com aquela entrega, e por isso está separado desde já: a
-credencial continua no `.env`. São duas perguntas diferentes, e as duas
-precisam de resposta afirmativa para um canal enviar
+Por isso ela **não** entra mais em `validar`: depois desta entrega um typo em
+`ALERTAS_CANAIS` não desliga canal nenhum, e derrubar a varredura por causa de
+uma variável inerte trocaria uma configuração morta com erro de digitação por
+uma operação sem aviso — exatamente o desfecho que este módulo inteiro existe
+para evitar. Onde o typo ainda importa é na migration, e lá ele para o deploy,
+que é o lugar certo para parar.
+
+O que **não** mudou: a credencial continua no `.env`. São duas perguntas
+diferentes, e as duas precisam de resposta afirmativa para um canal enviar
 (`ResumoVarredura.canais`).
 """
 
@@ -158,13 +165,18 @@ def normalizar_telefone(bruto: str) -> str:
 
 
 def canais_habilitados(settings: Settings) -> set[Canal]:
-    """Canais ligados por configuração, de `ALERTAS_CANAIS` (lista separada por vírgula).
+    """Canais ligados em `ALERTAS_CANAIS` (lista separada por vírgula).
 
-    Vazio devolve conjunto vazio — **nenhum canal envia**. É configuração
-    explícita e não acidente: o default de `Settings` é `"whatsapp"`, e um
-    `.env` que não conheça a variável continua com o comportamento de sempre.
-    Ainda assim é o botão que silencia a operação inteira, e é por isso que o
-    ADR 0006 exige auditoria quando ele virar tela.
+    **Não é mais a fonte de verdade da aplicação.** Desde a parte 2 do ADR 0006
+    o liga/desliga vem da tabela `canais_alerta`
+    (`alerts.canais_repository.canais_habilitados`); esta função sobreviveu
+    porque a migration que criou aquela tabela precisa de um estado inicial, e
+    o valor antigo é o único default honesto para ele — ver a docstring do
+    módulo e a da migration `a4d6c8b21f37`.
+
+    Vazio devolve conjunto vazio. O default de `Settings` é `"whatsapp"`, então
+    um `.env` que nunca conheceu a variável foi semeado com o comportamento de
+    sempre: WhatsApp ligado, e-mail desligado.
 
     Habilitado não é o mesmo que envia: falta a credencial (ver
     `alerts/canais.py`).
@@ -290,14 +302,17 @@ def _override_de(chave: str, valor: Any) -> OverrideTemplate:
 
 
 def validar(settings: Settings) -> None:
-    """Lê as quatro configurações de alerta só para que um typo estoure cedo.
+    """Lê as configurações de alerta que ainda decidem algo, para um typo estourar cedo.
 
     Chamada no começo da varredura, **antes** da guarda de canal indisponível:
     um erro de digitação precisa aparecer como 422 (ou saída 1 no cron) mesmo
     em ambiente sem credencial nenhuma — senão só se descobre a configuração
     quebrada no dia em que o alerta deveria ter saído.
+
+    `canais_habilitados` ficou **de fora** na parte 2 do ADR 0006: `ALERTAS_CANAIS`
+    deixou de decidir envio, e recusar a varredura por causa dela silenciaria a
+    operação por uma variável que não faz nada (ver a docstring do módulo).
     """
-    canais_habilitados(settings)
     destinatarios(settings)
     papeis_por_tipo(settings)
     templates(settings)

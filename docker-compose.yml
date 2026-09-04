@@ -118,8 +118,9 @@ services:
       minio:
         condition: service_healthy
 
-  # Varredura de alertas (issue #9). Envia pelos canais ligados em
-  # ALERTAS_CANAIS — WhatsApp e/ou e-mail, ADR 0006. Fica em `profiles: ["tools"]`
+  # Varredura de alertas (issue #9). Envia pelos canais ligados na tabela
+  # `canais_alerta` — WhatsApp e/ou e-mail, ADR 0006; o `.env` só decide a
+  # credencial de cada um. Fica em `profiles: ["tools"]`
   # como as demais ferramentas: em produção quem a chama é um cron
   # (`docker compose run --rm api-alertas`), não o `up`. Sai com código 1 só
   # quando a configuração de alertas está quebrada — é isso que o cron monitora.

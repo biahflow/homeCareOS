@@ -9,8 +9,12 @@ de dado, não renomeação.
 
 `Canal` é a segunda chave, criada pelo ADR 0006: um alerta é sempre renderizado
 e entregue POR UM CANAL, e a linha do log diz por qual. Vale a mesma regra de
-estabilidade: o valor vai para `alertas_enviados.canal` e para
-`ALERTAS_CANAIS`.
+estabilidade, e ela ficou mais dura na parte 2 do ADR: o valor vai para
+`alertas_enviados.canal`, para `canais_alerta.canal` e
+`auditoria_canais_alerta.canal` (o estado configurado e o histórico dele), para
+o path de `PATCH /api/alertas/canais/{canal}` e para a semente
+`ALERTAS_CANAIS`. Renomear um membro aqui é migração de dado em três tabelas e
+quebra de contrato de API — não renomeação.
 """
 
 from __future__ import annotations
