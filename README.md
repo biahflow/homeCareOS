@@ -31,10 +31,10 @@ do próximo `up`/`run`:
 docker compose --profile tools build && docker compose up -d
 ```
 
-O `--profile tools` importa: `api`, `api-migrate`, `api-seed` e `api-alertas`
-compartilham o mesmo Dockerfile mas constroem imagens **separadas**, e um
-`build` sem ele alcança só a do `api`. O comando acima reconstrói também o
-`web`, que não está em profile nenhum.
+O `--profile tools` importa: `api`, `api-migrate`, `api-seed`, `api-alertas` e
+`api-retencao` compartilham o mesmo Dockerfile mas constroem imagens
+**separadas**, e um `build` sem ele alcança só a do `api`. O comando acima
+reconstrói também o `web`, que não está em profile nenhum.
 
 Esquecer o rebuild não passa em silêncio: o container recusa arrancar e
 `docker compose logs api` diz o que fazer, em vez de morrer num
