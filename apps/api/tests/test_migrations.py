@@ -13,10 +13,13 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
+from homecareos.alerts.schema import Canal
+from homecareos.config import Settings
 from homecareos.db.session import get_engine
 
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +38,12 @@ REQUIRED_INDEXES = {
 
 # Migration inicial, a única que cria (e portanto precisa dropar) os tipos enum.
 REVISION_DOS_ENUMS = "e5c3d5af888e"
+
+# A migration que leva a configuração dos canais para o banco (ADR 0006), e a
+# única do projeto que **insere dado** e **lê configuração de ambiente**. As
+# duas quebras de padrão estão justificadas na docstring dela; o que os testes
+# abaixo guardam é o comportamento que as justifica.
+REVISION_DOS_CANAIS = "a4d6c8b21f37"
 
 # Os 5 enums nativos do Postgres criados pela migration inicial.
 NATIVE_ENUM_TYPES = (
@@ -130,3 +139,59 @@ def test_downgrade_drops_every_native_enum_type() -> None:
             f"downgrade() não referencia o tipo enum {enum_name!r}"
         )
     assert source.count(".drop(") >= len(NATIVE_ENUM_TYPES)
+
+
+def test_a_migration_de_canais_semeia_espelhando_alertas_canais(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O estado inicial da tabela de canais é o valor antigo, e não um literal.
+
+    Fixar `whatsapp` na migration religaria o WhatsApp de quem o tivesse
+    desligado e ignoraria quem já tivesse ligado o e-mail — que é exatamente a
+    mudança de comportamento que ela existe para não causar. Uma tabela vazia
+    seria pior ainda: nenhum canal envia, e a operação fica em silêncio a partir
+    do deploy.
+    """
+    modulo = _script_directory().get_revision(REVISION_DOS_CANAIS).module
+
+    for valor, esperado in [
+        ("whatsapp", {"whatsapp"}),
+        ("whatsapp,email", {"whatsapp", "email"}),
+        (" email , whatsapp ", {"whatsapp", "email"}),
+        ("", set()),
+    ]:
+        monkeypatch.setattr(
+            modulo, "get_settings", lambda valor=valor: Settings(alertas_canais=valor)
+        )
+        assert modulo._canais_semeados() == esperado
+
+
+def test_a_migration_de_canais_recusa_canal_desconhecido(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Um typo em `ALERTAS_CANAIS` não pode virar "todos os canais desligados".
+
+    Antes desta migration o typo já derrubava a varredura com 422; depois dela a
+    variável só é lida aqui. Semear em silêncio trocaria um deploy que para —
+    visível — por um deploy que sobe mudo.
+    """
+    modulo = _script_directory().get_revision(REVISION_DOS_CANAIS).module
+    monkeypatch.setattr(modulo, "get_settings", lambda: Settings(alertas_canais="telegrama"))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        modulo._canais_semeados()
+
+    mensagem = str(excinfo.value)
+    assert "telegrama" in mensagem
+    for canal in Canal:
+        assert canal.value in mensagem
+
+
+def test_o_downgrade_de_canais_dropa_as_duas_tabelas() -> None:
+    """Verificação estática, como a dos tipos enum: o banco compartilhado não
+    aguenta um downgrade de verdade (ver a docstring do módulo)."""
+    revision = _script_directory().get_revision(REVISION_DOS_CANAIS)
+    source = inspect.getsource(revision.module.downgrade)
+
+    assert 'op.drop_table("auditoria_canais_alerta")' in source
+    assert 'op.drop_table("canais_alerta")' in source

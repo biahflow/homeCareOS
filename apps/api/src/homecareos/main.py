@@ -30,6 +30,7 @@ import logging
 
 from fastapi import Depends, FastAPI
 
+from homecareos.alerts.canais_router import router as canais_alerta_router
 from homecareos.alerts.router import router as alertas_router
 from homecareos.api.errors import register_exception_handlers
 from homecareos.api.routers.documentos import router as documentos_router
@@ -136,6 +137,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(relatorios_router, dependencies=[Depends(exigir_papel(*todos_os_papeis))])
     app.include_router(
         alertas_router,
+        dependencies=[Depends(exigir_papel(Papel.COORDENADOR, Papel.GESTOR))],
+    )
+    # Configuração dos canais de alerta (ADR 0006, parte 2): router próprio sob
+    # o mesmo prefixo (ver a docstring de `alerts/canais_router.py`). A regra
+    # aqui é a mais larga — ler o estado dos canais é acompanhamento da
+    # operação, como o log de `/api/alertas` — e o `PATCH` declara a sua
+    # própria: ligar e desligar canal é operação, e quem opera é o coordenador.
+    app.include_router(
+        canais_alerta_router,
         dependencies=[Depends(exigir_papel(Papel.COORDENADOR, Papel.GESTOR))],
     )
 

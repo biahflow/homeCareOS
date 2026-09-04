@@ -9,6 +9,14 @@ registrar.
 O `mailer` **não** é alterado por esta trilha (ele serve à recuperação de
 senha, issue #34): o `CanalEmail` é um cliente dele como qualquer outro, e a
 tradução do erro acontece do lado de cá.
+
+**Nenhum teste aqui toca o banco**, e é por isso que eles exercitam
+`montar_canais` e não `construir_canais`: desde a parte 2 do ADR 0006 o
+liga/desliga vem da tabela `canais_alerta`, e `construir_canais` só acrescenta
+essa leitura em cima desta função. O que se prova aqui é o que independe da
+fonte — que "habilitado" e "disponível" são perguntas separadas, e que a
+construção não faz E/S. A leitura do banco é exercitada em
+`tests/test_api_canais.py`, contra Postgres real.
 """
 
 from __future__ import annotations
@@ -21,8 +29,9 @@ from sqlalchemy.orm import Session
 from homecareos.alerts.canais import (
     CanalEmail,
     CanalWhatsApp,
+    alguma_credencial_presente,
     canais_que_enviam,
-    construir_canais,
+    montar_canais,
 )
 from homecareos.alerts.errors import EnvioError
 from homecareos.alerts.schema import Canal, MensagemAlerta, TipoAlerta
@@ -67,7 +76,7 @@ class ProviderEmailFake:
 
 
 def test_canal_sem_credencial_fica_indisponivel_e_nao_estoura() -> None:
-    canais = construir_canais(Settings(alertas_canais="whatsapp,email"))
+    canais = montar_canais(Settings(), habilitados={Canal.WHATSAPP, Canal.EMAIL})
 
     for canal in canais:
         assert canal.habilitado is True
@@ -76,14 +85,14 @@ def test_canal_sem_credencial_fica_indisponivel_e_nao_estoura() -> None:
 
 
 def test_canal_com_credencial_fica_disponivel() -> None:
-    canais = construir_canais(
+    canais = montar_canais(
         Settings(
-            alertas_canais="whatsapp,email",
             uazapi_base_url=BASE_URL,
             uazapi_token=TOKEN,
             smtp_host=SMTP_HOST,
             smtp_remetente=SMTP_REMETENTE,
-        )
+        ),
+        habilitados={Canal.WHATSAPP, Canal.EMAIL},
     )
 
     assert {canal.canal for canal in canais_que_enviam(canais)} == {Canal.WHATSAPP, Canal.EMAIL}
@@ -92,12 +101,9 @@ def test_canal_com_credencial_fica_disponivel() -> None:
 def test_habilitado_e_disponivel_sao_perguntas_separadas() -> None:
     """ "Desliguei" e "esqueci de configurar" precisam ser distinguíveis: sem
     isso, quem liga um canal na tela não entende por que nada sai (ADR 0006)."""
-    canais = construir_canais(
-        Settings(
-            alertas_canais="whatsapp",
-            smtp_host=SMTP_HOST,
-            smtp_remetente=SMTP_REMETENTE,
-        )
+    canais = montar_canais(
+        Settings(smtp_host=SMTP_HOST, smtp_remetente=SMTP_REMETENTE),
+        habilitados={Canal.WHATSAPP},
     )
     por_canal = {canal.canal: canal for canal in canais}
 
@@ -110,12 +116,29 @@ def test_habilitado_e_disponivel_sao_perguntas_separadas() -> None:
     assert canais_que_enviam(canais) == []
 
 
-def test_construir_canais_devolve_todos_mesmo_os_desligados() -> None:
+def test_montar_canais_devolve_todos_mesmo_os_desligados() -> None:
     """Um canal que sumisse da lista seria indistinguível de um canal que
     ninguém olhou — e o resumo da varredura precisa responder por ele."""
-    canais = construir_canais(Settings(alertas_canais=""))
+    canais = montar_canais(Settings(), habilitados=set())
 
     assert {canal.canal for canal in canais} == set(Canal)
+
+
+# --- a guarda barata do gancho da classificação ---------------------------------
+
+
+def test_sem_credencial_nenhuma_nao_ha_o_que_perguntar_ao_banco() -> None:
+    """`alguma_credencial_presente` é o que deixa o gancho da classificação sair
+    antes de abrir sessão (`alerts/hooks.py`): sem uazapi e sem SMTP, nenhum
+    estado da tabela `canais_alerta` faz um canal enviar."""
+    assert alguma_credencial_presente(Settings()) is False
+
+
+def test_uma_credencial_basta_para_a_pergunta_valer_a_conexao() -> None:
+    assert (
+        alguma_credencial_presente(Settings(smtp_host=SMTP_HOST, smtp_remetente=SMTP_REMETENTE))
+        is True
+    )
 
 
 # --- entrega: cada gateway recebe o que a porta dele espera ---------------------

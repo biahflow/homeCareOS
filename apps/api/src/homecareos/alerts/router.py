@@ -11,6 +11,10 @@ Os canais vêm de uma dependency (`obter_canais`) em vez de serem construídos
 dentro do handler: é o que permite ao teste de integração injetar dublês em
 memória e exercitar a política anti-bombardeio sem tocar em rede nem em caixa
 postal.
+
+O liga/desliga de cada canal é lido da tabela `canais_alerta` (ADR 0006, parte
+2). Quem o **edita** é o coordenador, em `alerts/canais_router.py`, que vive
+sob o mesmo prefixo mas em router próprio.
 """
 
 from __future__ import annotations
@@ -46,17 +50,12 @@ def _erro_de_configuracao(exc: AlertConfigError) -> HTTPException:
     """422 com a mensagem inteira: é erro de configuração de quem opera, e a
     mensagem tem que dizer o que consertar. Sem ela, a pessoa recebe "erro de
     configuração" e volta a caçar o typo no `.env` no escuro.
-
-    Existe como função porque a configuração é lida em **dois** momentos da
-    mesma requisição — na dependency, para montar os canais, e dentro da
-    varredura, para os destinatários e templates —, e um typo tem de virar o
-    mesmo 422 nos dois. Enquanto isto era só o corpo do handler, um
-    `ALERTAS_CANAIS` inválido escapava pela dependency e virava 500.
     """
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
 
 def obter_canais(
+    session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> list[CanalAlerta]:
     """Os canais desta requisição, cada um sabendo se está ligado e se tem credencial.
@@ -64,14 +63,17 @@ def obter_canais(
     Devolve **todos** os canais implementados, não só os que enviam: o resumo
     da varredura precisa distinguir "desliguei este canal" de "liguei e esqueci
     a credencial" (ADR 0006).
+
+    Não há `try/except AlertConfigError` aqui desde a parte 2 do ADR 0006, e a
+    ausência é deliberada: o liga/desliga vem da tabela `canais_alerta` e não
+    de `ALERTAS_CANAIS`, então não existe mais configuração de texto a
+    interpretar nesta dependency. O que sobrou de configuração no `.env`
+    (destinatários, papéis, templates) é validado por `config.validar` dentro
+    de `executar_varredura`, no corpo do handler, onde o `try` abaixo o
+    transforma em 422. Um `except` que não pode disparar seria código morto
+    documentando um risco que deixou de existir.
     """
-    try:
-        return construir_canais(settings)
-    except AlertConfigError as exc:
-        # Dependency roda ANTES do corpo do handler: sem este `except`, o
-        # `try` de `varredura` nunca veria o erro e um `ALERTAS_CANAIS` com
-        # typo viraria 500 em vez do 422 que diz o que consertar.
-        raise _erro_de_configuracao(exc) from exc
+    return construir_canais(session, settings)
 
 
 class AlertaItem(BaseModel):

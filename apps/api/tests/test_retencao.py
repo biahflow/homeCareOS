@@ -30,11 +30,13 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from homecareos.alerts.schema import Canal
 from homecareos.auth import senhas
 from homecareos.auth.schema import AcaoAuditoriaUsuario, Papel
 from homecareos.config import Settings, get_settings
 from homecareos.db.models import (
     AlertaEnviado,
+    AuditoriaCanal,
     AuditoriaUsuario,
     ConsumoRateLimit,
     TentativaLogin,
@@ -47,8 +49,10 @@ from homecareos.retencao import cli as retencao_cli
 from homecareos.retencao.errors import RetencaoConfigError, RetencaoInvalidaError
 from homecareos.retencao.janelas import (
     FATOR_MARGEM_SEGURANCA,
+    MINIMO_AUDITORIA_CANAIS,
     MINIMO_AUDITORIA_USUARIOS,
     JanelaSeguranca,
+    pisos_auditoria_canais,
     pisos_auditoria_usuarios,
     pisos_consumos_rate_limit,
 )
@@ -665,8 +669,140 @@ def test_expurgo_sem_filtro_cobre_todas_as_tabelas_do_registro(
         "tokens_recuperacao",
         "alertas_enviados",
         "auditoria_usuarios",
+        "auditoria_canais_alerta",
         "consumos_rate_limit",
     }
+
+
+# --- auditoria_canais_alerta --------------------------------------------------
+#
+# A sexta tabela do registro, e a segunda com piso de VALOR de auditoria em vez
+# de janela de freio: nenhum freio de segurança a lê (ADR 0006).
+#
+# `canais_alerta` — a configuração em si — **não** entra no expurgo, e não é
+# esquecimento: ela tem uma linha por canal e nada nela envelhece. Apagar por
+# idade a linha que diz se o WhatsApp está ligado desligaria o canal em
+# silêncio, que é exatamente o desastre que a migration daquela tabela existe
+# para evitar.
+
+
+@pytest.fixture
+def usuario_ator_de_canal(sessao: Session) -> Iterator[Usuario]:
+    """Usuário sentinela que é o ator dos eventos de canal deste teste.
+
+    O teardown apaga primeiro os eventos que citam este usuário (senão a FK
+    segura a exclusão dele) e depois o próprio usuário — só o que o teste criou,
+    nunca `TRUNCATE`.
+    """
+    linha = _criar_usuario(sessao)
+    yield linha
+    sessao.execute(
+        text("delete from auditoria_canais_alerta where usuario_id = :id"), {"id": linha.id}
+    )
+    sessao.commit()
+    _limpar_usuario(sessao, linha.id)
+
+
+def _evento_canal(*, usuario: Usuario, created_at: datetime) -> AuditoriaCanal:
+    return AuditoriaCanal(
+        usuario=usuario.email,
+        usuario_id=usuario.id,
+        canal=Canal.WHATSAPP.value,
+        habilitado_de=True,
+        habilitado_para=False,
+        created_at=created_at,
+    )
+
+
+def test_auditoria_canais_apaga_o_antigo_e_preserva_o_recente(
+    sessao: Session, settings: Settings, usuario_ator_de_canal: Usuario
+) -> None:
+    agora = datetime.now(UTC)
+    # 2000 dias > a retenção default de 1825 (5 anos).
+    antigo = _evento_canal(usuario=usuario_ator_de_canal, created_at=agora - timedelta(days=2000))
+    recente = _evento_canal(usuario=usuario_ator_de_canal, created_at=agora)
+    sessao.add_all([antigo, recente])
+    sessao.commit()
+    antigo_id, recente_id = antigo.id, recente.id
+
+    resumo = expurgar(
+        sessao,
+        settings,
+        tabelas=["auditoria_canais_alerta"],
+        lote=1000,
+        dry_run=False,
+        agora=agora,
+    )
+
+    assert resumo.tabelas["auditoria_canais_alerta"].apagadas >= 1
+    assert sessao.get(AuditoriaCanal, antigo_id) is None
+    assert sessao.get(AuditoriaCanal, recente_id) is not None
+
+
+def test_auditoria_canais_dry_run_conta_e_nao_apaga(
+    sessao: Session, settings: Settings, usuario_ator_de_canal: Usuario
+) -> None:
+    agora = datetime.now(UTC)
+    antigo = _evento_canal(usuario=usuario_ator_de_canal, created_at=agora - timedelta(days=2000))
+    sessao.add(antigo)
+    sessao.commit()
+    antigo_id = antigo.id
+
+    resumo = expurgar(
+        sessao,
+        settings,
+        tabelas=["auditoria_canais_alerta"],
+        lote=1000,
+        dry_run=True,
+        agora=agora,
+    )
+
+    assert resumo.dry_run is True
+    assert resumo.tabelas["auditoria_canais_alerta"].apagadas >= 1
+    assert sessao.get(AuditoriaCanal, antigo_id) is not None
+
+
+def test_auditoria_canais_retencao_abaixo_do_piso_falha_e_nao_apaga(
+    sessao: Session, settings: Settings, usuario_ator_de_canal: Usuario
+) -> None:
+    """Trinta dias violam o piso de um ano — e a recusa fala do PROPÓSITO da
+    tabela, não de um freio de segurança, que aqui não existe.
+    """
+    agora = datetime.now(UTC)
+    antigo = _evento_canal(usuario=usuario_ator_de_canal, created_at=agora - timedelta(days=2000))
+    sessao.add(antigo)
+    sessao.commit()
+    antigo_id = antigo.id
+
+    invalida = settings.model_copy(update={"retencao_auditoria_canais_dias": 30})
+
+    # Como nas outras tabelas, a trava roda mesmo em dry-run.
+    with pytest.raises(RetencaoInvalidaError):
+        expurgar(
+            sessao,
+            invalida,
+            tabelas=["auditoria_canais_alerta"],
+            lote=1000,
+            dry_run=True,
+            agora=agora,
+        )
+    with pytest.raises(RetencaoInvalidaError) as excinfo:
+        expurgar(
+            sessao,
+            invalida,
+            tabelas=["auditoria_canais_alerta"],
+            lote=1000,
+            dry_run=False,
+            agora=agora,
+        )
+
+    mensagem = str(excinfo.value)
+    assert "a operação está sem aviso" in mensagem
+    # A razão errada seria pior que razão nenhuma: não há freio lendo esta tabela.
+    assert "desarmar" not in mensagem
+    assert "margem de segurança aplicada" not in mensagem
+
+    assert sessao.get(AuditoriaCanal, antigo_id) is not None
 
 
 # --- os dois tipos de piso ----------------------------------------------------
@@ -686,6 +822,17 @@ def test_piso_de_valor_de_auditoria_e_o_minimo_declarado_sem_margem() -> None:
 
     assert piso.piso_minimo == MINIMO_AUDITORIA_USUARIOS == timedelta(days=365)
     # E a recusa não empresta o vocabulário do piso de freio.
+    assert "desarmar" not in piso.motivo()
+    assert f"{FATOR_MARGEM_SEGURANCA}x" not in piso.motivo()
+
+
+def test_o_piso_da_auditoria_de_canais_segue_a_mesma_natureza() -> None:
+    """Segundo piso de propósito do projeto (ADR 0006), com o mesmo mínimo
+    declarado da auditoria administrativa e pela mesma razão: a pergunta que a
+    tabela responde aparece em investigação, não no trimestre do evento."""
+    (piso,) = pisos_auditoria_canais(get_settings())
+
+    assert piso.piso_minimo == MINIMO_AUDITORIA_CANAIS == timedelta(days=365)
     assert "desarmar" not in piso.motivo()
     assert f"{FATOR_MARGEM_SEGURANCA}x" not in piso.motivo()
 

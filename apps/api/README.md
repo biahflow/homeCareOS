@@ -101,17 +101,21 @@ Quatro alertas (issue #9), enviados por **dois canais independentes** —
 WhatsApp e e-mail (ADR 0006) — e registrados em `alertas_enviados`. Endpoints
 sob `/api/alertas` — protegidos por `X-API-Key` como todo o resto de `/api/*`,
 e restritos a `coordenador` e `gestor` desde a issue #30 (`exigir_papel`,
-`conferente` recebe 403):
+`conferente` recebe 403). A única exceção é o `PATCH` que liga e desliga canal,
+que é só do coordenador:
 
 - `POST /varredura` — roda os quatro detectores e envia o que for novo. É o
   mesmo trabalho de `python -m homecareos.alerts.scan`
   (`docker compose run --rm api-alertas`), que é o que o cron chama.
 - `GET ""` — o log paginado do que foi enviado, falhou ou foi suprimido,
   filtrável por `tipo`, `status` e `documento_id`.
+- `GET`/`PATCH /canais` e `GET /canais/auditoria` — o liga/desliga de cada
+  canal, que vive em banco desde o ADR 0006 e é do **coordenador**; ver "O
+  liga/desliga vive no banco" abaixo.
 
 ### Os dois canais, e as duas perguntas que ligam cada um
 
-    canal habilitado (ALERTAS_CANAIS)  x  credencial presente (.env)  =  canal envia
+    canal habilitado (tabela canais_alerta)  x  credencial presente (.env)  =  canal envia
 
 As duas perguntas são **diferentes** e o resumo da varredura responde as duas,
 canal a canal (`canais` em `POST /api/alertas/varredura` e na saída JSON do
@@ -134,22 +138,69 @@ alguém ligar um canal e não entender por que nada sai.
 | `whatsapp` | `UAZAPI_BASE_URL` + `UAZAPI_TOKEN` | telefones de `ALERTAS_DESTINATARIOS` | emoji e `*negrito*` |
 | `email` | `SMTP_HOST` + `SMTP_REMETENTE` (o **mesmo** SMTP da recuperação de senha) | e-mails das contas **ativas** do papel (`ALERTAS_PAPEIS_EMAIL`) | texto puro, com assunto próprio |
 
-`ALERTAS_CANAIS=whatsapp` é o padrão, e preserva o comportamento anterior ao
-ADR: ligar o e-mail por padrão seria mandar mensagem que ninguém pediu. Vazio
-desliga tudo.
-
 **Os canais são independentes, nunca reserva um do outro.** Quem estiver nos
 dois recebe o mesmo aviso duas vezes, e isso é o desejado: um canal como
 fallback do outro exigiria saber que o primeiro falhou de verdade, e o gateway
 aceitar a mensagem não prova entrega. O ADR 0006 descartou fallback por isso.
 
-**Transição declarada:** o ADR 0006 decide que o liga/desliga vai para uma
-tabela de canais, editável pelo coordenador numa tela e com a mudança
-auditada — porque quem desliga um canal silencia a operação. Até lá é
-`ALERTAS_CANAIS`, e mudar exige acesso ao servidor. Quando a tabela existir, o
-que muda é `alerts/config.canais_habilitados`: nem o serviço, nem os templates,
-nem o log sabem de onde veio a resposta. A credencial continua no `.env` nos
-dois mundos.
+### O liga/desliga vive no banco, e mudá-lo é auditado
+
+`canais_alerta` tem **uma linha por canal**, com o estado que quem opera decide
+e o par "quem decidiu / quando". Não é uma tabela genérica de chave-valor: o
+ADR 0006 descartou essa forma porque sem tipo e sem validação ela vira o
+depósito onde configuração entra sem revisão.
+
+| rota | quem | o que faz |
+| --- | --- | --- |
+| `GET /api/alertas/canais` | coordenador, gestor | o estado de cada canal, com `habilitado` e `disponivel` separados |
+| `PATCH /api/alertas/canais/{canal}` | **coordenador** | liga/desliga; corpo `{"habilitado": true}` |
+| `GET /api/alertas/canais/auditoria` | coordenador, gestor | quem ligou, quem desligou, quando; paginado, filtrável por `canal`, `ator_id` e `habilitado` |
+
+Ligar e desligar canal é **operação**, e quem opera é o coordenador — a matriz
+do ADR 0001 fica intacta, e o gestor segue com um único write no sistema, o
+baseline. Ler é do gestor porque "por que ninguém foi avisado?" é pergunta de
+quem acompanha a operação, e ele já lê o log de `/api/alertas`, que expõe mais
+do que essas rotas.
+
+**Toda mudança de estado é auditada** (`auditoria_canais_alerta`: ator, canal,
+de/para, quando), na mesma transação da mudança — porque quem desliga um canal
+silencia a operação, e desligar por engano só é perceptível quando alguém repara
+que parou de receber. Um `PATCH` que reenvia o valor que já está no banco **não**
+gera evento e não mexe em `atualizado_por`: esse par responde "quem decidiu o
+estado atual", não "quem clicou por último". Chamada por `X-API-Key` é auditada
+com ator nulo e rótulo `"api"`, mesma convenção de `log_conferencia` e
+`auditoria_usuarios`.
+
+A auditoria vai em **tabela própria**, e não em `auditoria_usuarios`: lá
+`alvo_usuario_id` é `NOT NULL` com FK para `usuarios`, e registrar "fulano
+desligou o WhatsApp" obrigaria a inventar um alvo fictício, corrompendo o dado
+que a issue #30 criou. O padrão do projeto é uma tabela de auditoria por
+entidade de domínio.
+
+#### `ALERTAS_CANAIS` não decide mais nada — e por que ela continua aí
+
+A variável ficou como **semente da migration** `a4d6c8b21f37`, e só isso.
+Editá-la num sistema já migrado não liga nem desliga canal nenhum; num banco
+criado do zero ela ainda decide o estado inicial, e um canal desconhecido nela
+faz a migration **parar** com mensagem — um typo não pode virar "todos
+desligados". Ela está marcada assim no `.env.example`, em `config.py` e em
+`alerts/config.canais_habilitados`.
+
+Duas consequências que valem estar escritas:
+
+- **`ALERTAS_CANAIS` saiu de `alerts/config.validar`.** Um typo nela deixou de
+  derrubar a varredura com 422: recusar a varredura por causa de uma variável
+  inerte trocaria uma configuração morta com erro de digitação por uma operação
+  sem aviso. Onde o typo ainda importa é na migration, e lá ele para o deploy —
+  que é o lugar certo para parar.
+- **A migration insere as linhas iniciais**, quebrando o padrão da casa
+  (`seed.py`). O seed é um passo separado do `alembic upgrade`, e entre um e
+  outro existe uma janela em que o código novo já está no ar lendo a tabela.
+  Para catálogo de regras essa janela é inofensiva; para "quais canais avisam a
+  equipe" ela significa **nenhum canal envia**, sem erro e sem aviso. A
+  justificativa completa está na docstring da migration. `seed.seed_canais`
+  continua existindo como **rede** para o canal que nascer depois dela — entra
+  desligado e nunca sobrescreve decisão de quem já mexeu na tela.
 
 ### Destinatário: por lista no WhatsApp, por papel no e-mail
 
@@ -379,6 +430,8 @@ sem isso, o tempo de resposta diria quem está cadastrado.
 | `GET /api/relatorios/metricas`, `GET /api/relatorios/baseline` | — | ✅ | ✅ |
 | `PUT /api/relatorios/baseline` | — | — | ✅ |
 | `POST /api/alertas/varredura`, `GET /api/alertas` | — | ✅ | ✅ |
+| `GET /api/alertas/canais`, `GET /api/alertas/canais/auditoria` | — | ✅ | ✅ |
+| `PATCH /api/alertas/canais/{canal}` | — | ✅ | — |
 | `GET /api/usuarios`, `POST /api/usuarios`, `PATCH /api/usuarios/{id}` | — | ✅ | — |
 
 `conferente` está contido em `coordenador`. `gestor` **não** é superconjunto de
@@ -913,7 +966,7 @@ legítimo: script mal escrito, integração em laço, curiosidade cara.
 
 ## Retenção e expurgo de dados
 
-Quatro tabelas crescem para sempre e nenhuma delas é só log.
+As tabelas que crescem para sempre, e nenhuma delas é só log.
 `tentativas_login`, `tokens_recuperacao` e `alertas_enviados` são consultadas
 por freios de segurança ativos, dentro de janelas de tempo (issue #39).
 `alertas_enviados` tem ainda um motivo de privacidade: `mensagem` guarda o
@@ -921,7 +974,13 @@ texto exatamente como foi enviado, **incluindo o nome do paciente** (ver
 `db/models/alerta.py`) — dado pessoal de saúde retido para sempre não é
 neutro, é exposição que só cresce. `auditoria_usuarios` entrou depois (issue
 #30) e é o caso diferente: **ninguém a lê como freio**, só
-`GET /api/usuarios/auditoria`.
+`GET /api/usuarios/auditoria`. `auditoria_canais_alerta` (ADR 0006) é da mesma
+natureza dela.
+
+`canais_alerta` — a configuração dos canais — **não** entra no expurgo, e não é
+esquecimento: ela tem uma linha por canal e nada nela envelhece. Apagar por
+idade a linha que diz se o WhatsApp está ligado desligaria o canal em silêncio,
+que é o desastre que a migration daquela tabela existe para evitar.
 
 | tabela | quem consulta | janela de segurança | o que quebra se você apagar dentro dela |
 | --- | --- | --- | --- |
@@ -930,6 +989,7 @@ neutro, é exposição que só cresce. `auditoria_usuarios` entrou depois (issue
 | `alertas_enviados` | cooldown (`alerts/repository.existe_envio_recente`) | `ALERTAS_COOLDOWN_HORAS` (24h por padrão) | o mesmo alerta dispara de novo |
 | `alertas_enviados` | rate limit (`alerts/repository.contar_envios_desde`) | `JANELA_RATE_LIMIT`, 1h, **hardcoded** em `alerts/service.py` | o teto por pessoa afrouxa |
 | `auditoria_usuarios` | ninguém, como freio — só a leitura de `GET /api/usuarios/auditoria` | nenhuma | nada trava; a tabela é que deixa de responder à pergunta que a justifica |
+| `auditoria_canais_alerta` | ninguém, como freio — só a leitura de `GET /api/alertas/canais/auditoria` | nenhuma | nada trava; some a resposta a "quem desligou o canal, e desde quando ninguém está sendo avisado?" |
 
 Por isso o expurgo **recusa-se a rodar** quando a retenção configurada for
 menor que **o dobro** da janela de segurança ativa de uma tabela — a janela é
@@ -938,18 +998,20 @@ contra o relógio (job atrasado, retenção configurada minutos acima do
 limite). O erro diz qual janela foi violada e qual o mínimo aceitável, e
 nada é apagado (nem nas outras tabelas da mesma execução).
 
-**`auditoria_usuarios` tem piso pela outra razão, e por isso sem a margem de
-2x.** Nenhum freio a consulta, então uma lista de janelas vazia deixaria
-passar qualquer retenção, inclusive um dia — e uma auditoria administrativa de
-um dia não responde a "quem deu a esta pessoa o papel de coordenador, e
-quando?", porque essa pergunta aparece em investigação, raramente no mesmo
-trimestre do evento. O piso dela é um **mínimo declarado** de 1 ano
-(`MINIMO_AUDITORIA_USUARIOS`, em `retencao/janelas.py`), aplicado literal: a
-margem de 2x compra folga contra o relógio de um consumidor real, e aqui não
-há relógio a perder — dobrar o mínimo em silêncio seria inventar política. A
-mensagem da recusa também é outra: ela fala do propósito da tabela, não de um
-freio que não existe. Esse piso **não é configuração** de propósito — um piso
-que quem configura a retenção pode baixar junto com ela não é piso.
+**As duas tabelas de auditoria têm piso pela outra razão, e por isso sem a
+margem de 2x.** Nenhum freio as consulta, então uma lista de janelas vazia
+deixaria passar qualquer retenção, inclusive um dia — e uma auditoria de um dia
+não responde a "quem deu a esta pessoa o papel de coordenador, e quando?" nem a
+"quem desligou o WhatsApp, e desde quando ninguém está sendo avisado?", porque
+essas perguntas aparecem em investigação, raramente no mesmo trimestre do
+evento. O piso de cada uma é um **mínimo declarado** de 1 ano
+(`MINIMO_AUDITORIA_USUARIOS` e `MINIMO_AUDITORIA_CANAIS`, em
+`retencao/janelas.py`), aplicado literal: a margem de 2x compra folga contra o
+relógio de um consumidor real, e aqui não há relógio a perder — dobrar o mínimo
+em silêncio seria inventar política. A mensagem da recusa também é outra: ela
+fala do propósito da tabela, não de um freio que não existe. Esses pisos **não
+são configuração** de propósito — um piso que quem configura a retenção pode
+baixar junto com ela não é piso.
 
 ### Configuração
 
@@ -959,11 +1021,12 @@ que quem configura a retenção pode baixar junto com ela não é piso.
 | `RETENCAO_TOKENS_RECUPERACAO_DIAS` | 30 | o valor de auditoria é curto; o token em si já morre em `SENHA_RESET_VALIDADE_MINUTOS` (30 min) |
 | `RETENCAO_ALERTAS_ENVIADOS_DIAS` | 90 | `mensagem` contém nome de paciente — reter menos é a decisão mais segura, desde que fique muito acima do cooldown de 24h |
 | `RETENCAO_AUDITORIA_USUARIOS_DIAS` | 1825 (5 anos) | auditoria de quem deu acesso a prontuário se consulta anos depois, em investigação ou auditoria externa; é prova de quem autorizou o quê, não log operacional como os 90 dias de `alertas_enviados`. Piso de 365 dias (1 ano), abaixo do qual o expurgo recusa rodar |
+| `RETENCAO_AUDITORIA_CANAIS_DIAS` | 1825 (5 anos) | auditoria de quem ligou e desligou canal (ADR 0006). **Mesmo número da linha acima, de propósito**: a pergunta que ela responde — "desde quando a operação está sem aviso?" — também aparece em investigação, e não há dado que sustente uma segunda política. É a mais leve das duas em dado pessoal: guarda o e-mail do ator (funcionário) e nenhum e-mail de alvo. Piso de 365 dias, também não configurável |
 | `RETENCAO_CONSUMOS_RATE_LIMIT_DIAS` | 30 dias | contador do freio das rotas caras (ADR 0005); perde utilidade passada a janela de uma hora, e os 30 dias existem para investigar um 429 depois. Piso de 2h — apagar dentro da janela devolveria cota a quem estourou o limite |
 | `RETENCAO_TAMANHO_LOTE` | 1000 | tamanho do lote de apagar, com commit por lote |
 
-**Os quatro defaults de dias — e o piso de 1 ano da auditoria — são uma
-assunção deste time, não um requisito confirmado pelo cliente ou pelo
+**Todos os defaults de dias — e os dois pisos de 1 ano das auditorias — são
+uma assunção deste time, não um requisito confirmado pelo cliente ou pelo
 jurídico** — precisam de confirmação antes de valer como política real de
 retenção.
 
@@ -1037,9 +1100,10 @@ do container) — mesma decisão de `api-alertas`: em produção quem chama
   antes de medir é otimização prematura para um job de manutenção fora do
   caminho de request, e todo índice novo custa escrita numa tabela que recebe
   insert a cada login. Se o expurgo diário demorar demais em regime, medir e
-  considerar índice em `created_at`. `auditoria_usuarios` é a exceção: já tem
-  `ix_auditoria_usuarios_created_at`, criado para a listagem paginada (mais
-  recente primeiro), e o expurgo dela pega carona nele.
+  considerar índice em `created_at`. As duas tabelas de auditoria são a exceção: já
+  têm `ix_auditoria_usuarios_created_at` e
+  `ix_auditoria_canais_alerta_created_at`, criados para a listagem paginada
+  (mais recente primeiro), e o expurgo delas pega carona neles.
 
 ### Limitações conhecidas
 

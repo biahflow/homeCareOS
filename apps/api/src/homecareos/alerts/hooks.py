@@ -9,7 +9,11 @@ from __future__ import annotations
 import logging
 import uuid
 
-from homecareos.alerts.canais import canais_que_enviam, construir_canais
+from homecareos.alerts.canais import (
+    alguma_credencial_presente,
+    canais_que_enviam,
+    construir_canais,
+)
 from homecareos.alerts.detectores import detectar_documento_incompleto_critico
 from homecareos.alerts.service import despachar
 from homecareos.config import get_settings
@@ -29,9 +33,13 @@ def notificar_classificacao(documento_id: uuid.UUID) -> None:
 
     Três decisões que valem registro:
 
-    - Sai **antes de abrir sessão** quando o gancho está desligado ou **nenhum
-      canal** está ligado com credencial. Abrir conexão para descobrir que não
-      há o que fazer é custo no caminho do upload.
+    - Sai **antes de abrir sessão** quando o gancho está desligado ou quando
+      **nenhum canal tem credencial**. Abrir conexão para descobrir que não há
+      o que fazer é custo no caminho do upload. Desde o ADR 0006 (parte 2) o
+      liga/desliga vem da tabela `canais_alerta`, e descobrir que todo canal
+      está desligado passou a exigir a sessão — mas a metade barata da guarda
+      continua valendo, e ela é a que cobre o ambiente sem gateway nenhum
+      configurado.
     - Abre a **própria** sessão, nunca a do chamador. A transação da
       classificação já commitou e é dele; um erro de escrita do log de alerta
       não pode desfazer uma classificação que deu certo.
@@ -46,11 +54,15 @@ def notificar_classificacao(documento_id: uuid.UUID) -> None:
         if not settings.alertas_hook_inline_habilitado:
             return
 
-        canais = construir_canais(settings)
-        if not canais_que_enviam(canais):
+        if not alguma_credencial_presente(settings):
+            # Sem uazapi e sem SMTP nenhum estado do banco faz um canal enviar:
+            # a resposta já é "não há o que fazer", e ela sai sem conexão.
             return
 
         with get_sessionmaker()() as session:
+            canais = construir_canais(session, settings)
+            if not canais_que_enviam(canais):
+                return
             alertas = detectar_documento_incompleto_critico(
                 session, settings, documento_id=documento_id
             )

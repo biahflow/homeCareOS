@@ -10,9 +10,10 @@ implementação — é a razão pela qual cada tabela recusa uma retenção curt
   **desarma esse freio**. O piso é a janela real do consumidor, com a margem
   de `FATOR_MARGEM_SEGURANCA`.
 - **Piso de valor de auditoria** (`PisoValorAuditoria`). `auditoria_usuarios`
-  não é consultada por freio nenhum — o único leitor é
-  `GET /api/usuarios/auditoria` (`auth/auditoria_router.py`), e nenhuma
-  decisão de segurança depende de ela estar completa nos últimos N minutos.
+  e `auditoria_canais_alerta` não são consultadas por freio nenhum — os únicos
+  leitores são `GET /api/usuarios/auditoria` (`auth/auditoria_router.py`) e
+  `GET /api/alertas/canais/auditoria` (`alerts/canais_router.py`), e nenhuma
+  decisão de segurança depende de elas estarem completas nos últimos N minutos.
   Mesmo assim tem piso, por outra razão: uma auditoria administrativa curta
   demais deixa de responder à única pergunta que a justifica ("quem deu a
   esta pessoa o papel de coordenador, e quando?"), que aparece em
@@ -33,6 +34,8 @@ constantes hardcoded, e não configuração:
   `JANELA_RATE_LIMIT`, hardcoded em `alerts/service.py` (rate limit).
 - `auditoria_usuarios`: nenhum freio — piso de propósito,
   `MINIMO_AUDITORIA_USUARIOS`.
+- `auditoria_canais_alerta`: nenhum freio — piso de propósito,
+  `MINIMO_AUDITORIA_CANAIS`.
 - `consumos_rate_limit`: `limites.protecao.avaliar_limite`, janela `JANELA`,
   hardcoded em `limites/protecao.py` (ADR 0005).
 """
@@ -73,6 +76,22 @@ FATOR_MARGEM_SEGURANCA = 2
 # pode baixar junto com a retenção que ele limita não é piso, é sugestão.
 # Mudá-lo é mudar política, e política se muda em code review.
 MINIMO_AUDITORIA_USUARIOS = timedelta(days=365)
+
+# Piso de valor de auditoria de `auditoria_canais_alerta` (ADR 0006): um ano, o
+# mesmo de `MINIMO_AUDITORIA_USUARIOS` e pela mesma razão — a pergunta que esta
+# tabela responde ("quem desligou o canal, e desde quando ninguém está sendo
+# avisado?") aparece em investigação, muito depois do evento.
+#
+# **Assunção deste time, não requisito confirmado pelo cliente ou pelo
+# jurídico.** Alinhar com a auditoria administrativa em vez de inventar um
+# segundo número é deliberado: não há dado que sustente uma política diferente,
+# e dois pisos distintos sem razão distinta viram folclore. Como o outro, NÃO é
+# configuração — um piso que quem configura a retenção pode baixar junto com ela
+# não é piso.
+#
+# Esta tabela é a mais leve das duas em dado pessoal: guarda o e-mail do ator
+# (funcionário), e nenhum `alvo_email` de terceiro.
+MINIMO_AUDITORIA_CANAIS = timedelta(days=365)
 
 
 class PisoRetencao(Protocol):
@@ -184,6 +203,24 @@ def pisos_auditoria_usuarios(settings: Settings) -> list[PisoRetencao]:
             minimo=MINIMO_AUDITORIA_USUARIOS,
             origem=(
                 "MINIMO_AUDITORIA_USUARIOS, declarado em retencao/janelas.py — "
+                "não é configuração, ver a docstring do módulo"
+            ),
+        )
+    ]
+
+
+def pisos_auditoria_canais(settings: Settings) -> list[PisoRetencao]:
+    del settings  # o piso de propósito é declarado, não derivado de configuração.
+    return [
+        PisoValorAuditoria(
+            descricao=(
+                "a auditoria dos canais deixa de responder à pergunta que a justifica "
+                "existir — quem desligou o canal, e desde quando a operação está sem "
+                "aviso —, que aparece em investigação, muito depois do evento"
+            ),
+            minimo=MINIMO_AUDITORIA_CANAIS,
+            origem=(
+                "MINIMO_AUDITORIA_CANAIS, declarado em retencao/janelas.py — "
                 "não é configuração, ver a docstring do módulo"
             ),
         )

@@ -16,7 +16,7 @@ um `if` no serviço:
 
 | pergunta | WhatsApp | e-mail |
 | --- | --- | --- |
-| está ligado? | `ALERTAS_CANAIS` (banco, na parte 2 do ADR) | idem |
+| está ligado? | `canais_alerta` (banco, editável pelo coordenador) | idem |
 | tem credencial? | uazapi (base URL + token) | SMTP (host + remetente) |
 | para quem? | telefones de `ALERTAS_DESTINATARIOS` | e-mails das contas **ativas** do papel |
 | que texto? | emoji e `*negrito*` | texto puro, com **assunto** |
@@ -45,21 +45,28 @@ configurei" são indistinguíveis e a única pista é uma linha de log. O
 2 depende disso para não deixar alguém ligar um canal e não entender por que
 nada sai.
 
-## O que a parte 2 do ADR troca aqui
+## De onde vem o liga/desliga (parte 2 do ADR, entregue)
 
-`construir_canais` lê o liga/desliga de `ALERTAS_CANAIS`. A parte 2 o lê de uma
-tabela de canais editável pelo coordenador, com a mudança auditada. **Só esta
-função muda**: o `habilitado` já é um dado do canal, e nem o serviço, nem os
-templates, nem o log perguntam de onde ele veio.
+`construir_canais` lê o `habilitado` da tabela `canais_alerta`
+(`alerts/canais_repository.py`), editável pelo coordenador por
+`PATCH /api/alertas/canais/{canal}` e com a mudança auditada. Antes desta
+entrega ele vinha de `ALERTAS_CANAIS`, e mudá-lo exigia acesso ao servidor.
+
+Só esta função mudou: o `habilitado` já era um dado do canal, e nem o serviço,
+nem os templates, nem o log perguntam de onde ele veio. O que a troca **custou**
+é a sessão — ler banco exige uma —, e por isso `construir_canais` passou a
+receber `Session`. `montar_canais` existe para quem já sabe a resposta e não
+quer o banco: a construção em si continua sem E/S.
 """
 
 from __future__ import annotations
 
+from collections.abc import Container
 from typing import Protocol
 
 from sqlalchemy.orm import Session
 
-from homecareos.alerts import config, repository, templates
+from homecareos.alerts import canais_repository, config, repository, templates
 from homecareos.alerts.errors import EnvioError
 from homecareos.alerts.provider import WhatsAppProvider, get_provider
 from homecareos.alerts.schema import Canal, Destinatario, MensagemAlerta, TipoAlerta
@@ -73,8 +80,8 @@ class CanalAlerta(Protocol):
 
     canal: Canal
     habilitado: bool
-    """Decisão de quem opera: este canal deve enviar? Vem de configuração hoje e
-    de banco na parte 2 do ADR 0006."""
+    """Decisão de quem opera: este canal deve enviar? Vem da tabela
+    `canais_alerta` (ADR 0006, parte 2), editável pelo coordenador."""
 
     def disponivel(self) -> bool:
         """Há credencial para enviar? Ausência **não é erro**, é modo de operação."""
@@ -193,8 +200,8 @@ class CanalEmail:
             raise EnvioError(str(exc)) from exc
 
 
-def construir_canais(settings: Settings) -> list[CanalAlerta]:
-    """Todos os canais implementados, cada um sabendo se está ligado e se pode enviar.
+def montar_canais(settings: Settings, *, habilitados: Container[Canal]) -> list[CanalAlerta]:
+    """Todos os canais implementados, com o `habilitado` que quem chama já resolveu.
 
     Devolve **todos**, e não só os ligados, porque o resumo da varredura precisa
     responder pelos dois estados de cada canal (`ResumoVarredura.canais`): um
@@ -202,13 +209,10 @@ def construir_canais(settings: Settings) -> list[CanalAlerta]:
     olhou, e é justamente a diferença entre "desliguei" e "esqueci de
     configurar" que o ADR 0006 manda mostrar separada.
 
-    Construir é barato e não faz E/S: as duas factories decidem só a partir da
-    configuração e devolvem `None` sem credencial.
-
-    **É aqui que a parte 2 do ADR entra**: `canais_habilitados` passa a ler a
-    tabela de canais em vez de `ALERTAS_CANAIS`. Nada mais desta trilha muda.
+    **Não faz E/S**: as duas factories decidem só a partir da configuração e
+    devolvem `None` sem credencial. É o que permite responder "algum canal tem
+    como enviar?" sem abrir conexão — ver `alguma_credencial_presente`.
     """
-    habilitados = config.canais_habilitados(settings)
     return [
         CanalWhatsApp(
             habilitado=Canal.WHATSAPP in habilitados,
@@ -219,6 +223,29 @@ def construir_canais(settings: Settings) -> list[CanalAlerta]:
             provider=get_email_provider(settings),
         ),
     ]
+
+
+def construir_canais(session: Session, settings: Settings) -> list[CanalAlerta]:
+    """Os canais desta passada, com o liga/desliga lido da tabela `canais_alerta`.
+
+    É **aqui** que a parte 2 do ADR 0006 aterrissa: a decisão de quem opera vem
+    do banco (editável pelo coordenador, com a mudança auditada) e a credencial
+    continua vindo do `.env`. As duas precisam de resposta afirmativa para um
+    canal enviar, e `canais_que_enviam` é quem faz essa conta.
+    """
+    return montar_canais(settings, habilitados=canais_repository.canais_habilitados(session))
+
+
+def alguma_credencial_presente(settings: Settings) -> bool:
+    """Algum canal **teria** como enviar, ignorando o liga/desliga? Não toca no banco.
+
+    Existe para o gancho da classificação (`alerts/hooks.py`), que está no
+    caminho do upload: sem credencial nenhuma, nenhum estado do banco faz um
+    canal enviar, e abrir conexão para descobrir isso é custo puro.
+    """
+    return any(
+        canal.disponivel() for canal in montar_canais(settings, habilitados=frozenset(Canal))
+    )
 
 
 def canais_que_enviam(canais: list[CanalAlerta]) -> list[CanalAlerta]:

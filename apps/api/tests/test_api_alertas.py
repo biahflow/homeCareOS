@@ -849,7 +849,9 @@ def test_gancho_que_explode_nao_impede_a_classificacao_de_commitar(
     de `EnvioError`.
     """
     monkeypatch.setattr(hooks, "get_settings", lambda: _com_alertas(settings))
-    monkeypatch.setattr(hooks, "construir_canais", lambda _settings: _canais(ProviderQueExplode()))
+    monkeypatch.setattr(
+        hooks, "construir_canais", lambda _session, _settings: _canais(ProviderQueExplode())
+    )
     documento = Documento(
         operadora_id=cenario.operadora.id,
         paciente_id=cenario.paciente.id,
@@ -903,7 +905,7 @@ def test_gancho_desligado_nao_envia_nada(
         "get_settings",
         lambda: _com_alertas(settings, alertas_hook_inline_habilitado=False),
     )
-    monkeypatch.setattr(hooks, "construir_canais", lambda _settings: _canais(provider))
+    monkeypatch.setattr(hooks, "construir_canais", lambda _session, _settings: _canais(provider))
 
     hooks.notificar_classificacao(cenario.critico.id)
 
@@ -919,7 +921,7 @@ def test_gancho_habilitado_notifica_o_documento_critico(
 ) -> None:
     provider = ProviderFake()
     monkeypatch.setattr(hooks, "get_settings", lambda: _com_alertas(settings))
-    monkeypatch.setattr(hooks, "construir_canais", lambda _settings: _canais(provider))
+    monkeypatch.setattr(hooks, "construir_canais", lambda _session, _settings: _canais(provider))
 
     hooks.notificar_classificacao(cenario.critico.id)
 
@@ -1422,11 +1424,19 @@ def test_mensagem_renderizada_do_email_vira_o_registro_com_assunto() -> None:
 # --- configuração quebrada tem de chegar a quem opera --------------------------
 
 
-def test_canal_invalido_responde_422_e_nao_500(settings: Settings, cenario: Cenario) -> None:
-    """`ALERTAS_CANAIS` é lido na **dependency**, que roda antes do corpo do
-    handler — o `try` de `varredura` nunca a veria. Sem o `except` lá, um typo
-    na variável virava 500 ("Internal Server Error") em vez do 422 que diz o
-    que consertar, e quem opera ficava sem pista nenhuma."""
+def test_canal_invalido_em_alertas_canais_nao_derruba_mais_a_varredura(
+    settings: Settings, cenario: Cenario
+) -> None:
+    """Depois da parte 2 do ADR 0006, `ALERTAS_CANAIS` **não decide nada**.
+
+    Antes desta entrega um typo ali virava 422 e a varredura não rodava, o que
+    era o certo: a variável desligava canal. Agora o liga/desliga vem da tabela
+    `canais_alerta`, e recusar a varredura por causa de uma variável inerte
+    trocaria uma configuração morta com erro de digitação por uma operação sem
+    aviso — que é o desfecho que a trilha inteira existe para evitar. O typo
+    ainda importa em um lugar só, e lá ele para o deploy: a migration que
+    semeou a tabela (`a4d6c8b21f37`).
+    """
     app.dependency_overrides[get_settings] = lambda: _com_alertas(
         settings, alertas_canais="whatsapp,telegrama"
     )
@@ -1435,11 +1445,8 @@ def test_canal_invalido_responde_422_e_nao_500(settings: Settings, cenario: Cena
     finally:
         app.dependency_overrides.clear()
 
-    assert resposta.status_code == 422
-    mensagem = resposta.json()["error"]["mensagem"]
-    assert "telegrama" in mensagem
-    for canal in Canal:
-        assert canal.value in mensagem
+    assert resposta.status_code == 200
+    assert set(resposta.json()["canais"]) == {canal.value for canal in Canal}
 
 
 def test_papel_invalido_responde_422_dizendo_o_que_consertar(
@@ -1459,17 +1466,27 @@ def test_papel_invalido_responde_422_dizendo_o_que_consertar(
     assert "diretor" in resposta.json()["error"]["mensagem"]
 
 
-def test_o_cron_sai_com_codigo_1_e_mensagem_quando_o_canal_nao_existe(
+def test_o_cron_sai_com_codigo_1_e_mensagem_quando_a_configuracao_esta_quebrada(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Código 1 é a única situação em que alguém precisa acordar: "a configuração
     está quebrada e ninguém está sendo avisado". Um traceback no lugar dele daria
-    o mesmo código de saída sem a mensagem que diz o que consertar."""
+    o mesmo código de saída sem a mensagem que diz o que consertar.
+
+    O typo vai em `ALERTAS_PAPEIS_EMAIL`, que continua decidindo quem recebe.
+    `ALERTAS_CANAIS` saiu desta lista com a parte 2 do ADR 0006 — ver
+    `test_canal_invalido_em_alertas_canais_nao_derruba_mais_a_varredura`.
+    """
     monkeypatch.setattr(
-        scan, "get_settings", lambda: _com_alertas(settings, alertas_canais="telegrama")
+        scan,
+        "get_settings",
+        lambda: _com_alertas(
+            settings,
+            alertas_papeis_email=json.dumps({TipoAlerta.VOLUME_ANORMAL.value: ["diretor"]}),
+        ),
     )
 
     codigo = scan.main()
 
     assert codigo == 1
-    assert "telegrama" in capsys.readouterr().err
+    assert "diretor" in capsys.readouterr().err

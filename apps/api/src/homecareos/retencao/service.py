@@ -3,17 +3,19 @@ e o resumo.
 
 O expurgo em si — a função que apaga (ou, em `dry_run`, só conta) cada tabela
 — vive junto do domínio dela (`auth/protecao.py`, `auth/recuperacao.py`,
-`alerts/repository.py`, `auth/auditoria.py`), no mesmo padrão de
+`alerts/repository.py`, `auth/auditoria.py`, `alerts/canais_repository.py`), no
+mesmo padrão de
 `auth.protecao.limpar_tentativas_antigas`. Este módulo só decide QUANDO é
 seguro chamar essas funções: valida a retenção configurada contra o piso
 mínimo de cada tabela (`retencao/janelas.py`) antes de apagar qualquer coisa,
 resolve `--tabela`/lote/dry-run e monta o resumo.
 
 Por que "piso" e não "janela": as três primeiras tabelas têm piso porque um
-freio de segurança as lê dentro de uma janela de tempo; `auditoria_usuarios`
-tem piso por propósito, sem freio nenhum lendo a tabela. Este módulo trata as
-duas naturezas pelo mesmo contrato (`janelas.PisoRetencao`) e não conhece a
-diferença — a razão da recusa vem do próprio piso.
+freio de segurança as lê dentro de uma janela de tempo; `auditoria_usuarios` e
+`auditoria_canais_alerta` têm piso por propósito, sem freio nenhum lendo a
+tabela. Este módulo trata as duas naturezas pelo mesmo contrato
+(`janelas.PisoRetencao`) e não conhece a diferença — a razão da recusa vem do
+próprio piso.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from typing import Protocol
 
 from sqlalchemy.orm import Session
 
+from homecareos.alerts.canais_repository import limpar_auditoria_canais_antiga
 from homecareos.alerts.repository import limpar_alertas_antigos
 from homecareos.auth.auditoria import limpar_auditoria_antiga
 from homecareos.auth.protecao import limpar_tentativas_antigas
@@ -35,6 +38,7 @@ from homecareos.retencao.errors import RetencaoConfigError, RetencaoInvalidaErro
 from homecareos.retencao.janelas import (
     PisoRetencao,
     pisos_alertas_enviados,
+    pisos_auditoria_canais,
     pisos_auditoria_usuarios,
     pisos_consumos_rate_limit,
     pisos_tentativas_login,
@@ -90,6 +94,13 @@ def _apagar_auditoria_usuarios(
     return limpar_auditoria_antiga(session, antes_de=antes_de, lote=lote, dry_run=dry_run)
 
 
+def _apagar_auditoria_canais(
+    session: Session, *, antes_de: datetime, agora: datetime, lote: int, dry_run: bool
+) -> int:
+    del agora  # auditoria_canais_alerta não tem exceção por idade — só o corte.
+    return limpar_auditoria_canais_antiga(session, antes_de=antes_de, lote=lote, dry_run=dry_run)
+
+
 def _apagar_consumos_rate_limit(
     session: Session, *, antes_de: datetime, agora: datetime, lote: int, dry_run: bool
 ) -> int:
@@ -121,6 +132,12 @@ TABELAS: tuple[Tabela, ...] = (
         retencao_dias=lambda s: s.retencao_auditoria_usuarios_dias,
         pisos=pisos_auditoria_usuarios,
         apagar=_apagar_auditoria_usuarios,
+    ),
+    Tabela(
+        chave="auditoria_canais_alerta",
+        retencao_dias=lambda s: s.retencao_auditoria_canais_dias,
+        pisos=pisos_auditoria_canais,
+        apagar=_apagar_auditoria_canais,
     ),
     Tabela(
         chave="consumos_rate_limit",

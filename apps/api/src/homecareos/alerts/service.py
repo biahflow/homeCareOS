@@ -93,9 +93,12 @@ def despachar(
     resumo.provider_configurado = _whatsapp_configurado(resumo)
 
     # Antes da guarda de canal indisponível: um typo em ALERTAS_DESTINATARIOS
-    # (ou em ALERTAS_CANAIS, ou em ALERTAS_PAPEIS_EMAIL) precisa aparecer como
-    # 422 mesmo em ambiente sem credencial nenhuma — senão só se descobre a
-    # configuração quebrada no dia em que o alerta deveria ter saído.
+    # (ou em ALERTAS_TEMPLATES, ou em ALERTAS_PAPEIS_EMAIL) precisa aparecer
+    # como 422 mesmo em ambiente sem credencial nenhuma — senão só se descobre
+    # a configuração quebrada no dia em que o alerta deveria ter saído.
+    # ALERTAS_CANAIS saiu desta lista na parte 2 do ADR 0006: ela não decide
+    # mais nada, e recusar a varredura por causa dela silenciaria a operação
+    # por uma variável inerte (ver `alerts/config.validar`).
     config.validar(settings)
 
     ativos = canais_que_enviam(list(canais))

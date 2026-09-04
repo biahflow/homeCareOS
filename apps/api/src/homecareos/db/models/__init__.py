@@ -1,8 +1,10 @@
 """Registra todos os models SQLAlchemy em `Base.metadata` (lido pelo Alembic autogenerate)."""
 
 from homecareos.db.models.alerta import AlertaEnviado
+from homecareos.db.models.auditoria_canal import AuditoriaCanal
 from homecareos.db.models.auditoria_usuario import AuditoriaUsuario
 from homecareos.db.models.baseline import BaselineCompetencia
+from homecareos.db.models.canal_alerta import ConfiguracaoCanal
 from homecareos.db.models.codigo_recuperacao_mfa import CodigoRecuperacaoMfa
 from homecareos.db.models.consumo_rate_limit import ConsumoRateLimit
 from homecareos.db.models.documento import Documento
@@ -27,9 +29,11 @@ from homecareos.db.models.validacao import Validacao
 
 __all__ = [
     "AlertaEnviado",
+    "AuditoriaCanal",
     "AuditoriaUsuario",
     "BaselineCompetencia",
     "CodigoRecuperacaoMfa",
+    "ConfiguracaoCanal",
     "ConsumoRateLimit",
     "Documento",
     "DocumentoStatus",
