@@ -1,8 +1,9 @@
 """Expurgo por retenção — issue #39: `python -m homecareos.retencao.cli`.
 
-Ferramenta sob demanda para as três tabelas que crescem sem limite
-(`tentativas_login`, `tokens_recuperacao`, `alertas_enviados`) e não tinham
-expurgo automático. Chamada por um cron EXTERNO, como
+Ferramenta sob demanda para as quatro tabelas que crescem sem limite
+(`tentativas_login`, `tokens_recuperacao`, `alertas_enviados`,
+`auditoria_usuarios`) e não tinham expurgo automático. Chamada por um cron
+EXTERNO, como
 `python -m homecareos.alerts.scan` — não há agendador embutido nesta entrega
 (ver `docker-compose.yml`, serviço `api-retencao`, e a seção "Retenção e
 expurgo de dados" no README de apps/api).
@@ -23,8 +24,9 @@ uma checagem que hoje não existe.
 
 Resumo em JSON em **stdout** (padrão de `alerts/scan.py`), erro em
 **stderr**, código `1` quando a retenção configurada viola o piso mínimo de
-alguma janela de segurança (ver `retencao/janelas.py`) ou quando um argumento
-é inválido (tabela desconhecida, lote não positivo).
+alguma tabela — janela de freio de segurança ou valor de auditoria, ver
+`retencao/janelas.py` — ou quando um argumento é inválido (tabela
+desconhecida, lote não positivo).
 """
 
 from __future__ import annotations
@@ -43,16 +45,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m homecareos.retencao.cli",
         description=(
-            "Expurga linhas antigas de tentativas_login, tokens_recuperacao e "
-            "alertas_enviados, respeitando a janela mínima de segurança de cada "
-            "uma (issue #39)."
+            "Expurga linhas antigas de tentativas_login, tokens_recuperacao, "
+            "alertas_enviados e auditoria_usuarios, respeitando o piso mínimo de "
+            "retenção de cada uma (issue #39)."
         ),
     )
     parser.add_argument(
         "--tabela",
         choices=sorted(NOMES_TABELAS),
         action="append",
-        help="Restringe o expurgo a uma tabela (repetível). Default: as três.",
+        help="Restringe o expurgo a uma tabela (repetível). Default: todas.",
     )
     modo = parser.add_mutually_exclusive_group()
     modo.add_argument(

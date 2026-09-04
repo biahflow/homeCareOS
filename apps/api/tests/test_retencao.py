@@ -31,12 +31,24 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from homecareos.auth import senhas
-from homecareos.auth.schema import Papel
+from homecareos.auth.schema import AcaoAuditoriaUsuario, Papel
 from homecareos.config import Settings, get_settings
-from homecareos.db.models import AlertaEnviado, TentativaLogin, TokenRecuperacao, Usuario
+from homecareos.db.models import (
+    AlertaEnviado,
+    AuditoriaUsuario,
+    TentativaLogin,
+    TokenRecuperacao,
+    Usuario,
+)
 from homecareos.db.session import get_sessionmaker
 from homecareos.retencao import cli as retencao_cli
 from homecareos.retencao.errors import RetencaoConfigError, RetencaoInvalidaError
+from homecareos.retencao.janelas import (
+    FATOR_MARGEM_SEGURANCA,
+    MINIMO_AUDITORIA_USUARIOS,
+    JanelaSeguranca,
+    pisos_auditoria_usuarios,
+)
 from homecareos.retencao.schema import ResumoExpurgo
 from homecareos.retencao.service import expurgar
 
@@ -495,3 +507,170 @@ def test_cli_dry_run_e_executar_juntos_e_invalido(capsys: pytest.CaptureFixture[
     with pytest.raises(SystemExit) as excinfo:
         retencao_cli.main(["--dry-run", "--executar"])
     assert excinfo.value.code == 2
+
+
+# --- auditoria_usuarios ------------------------------------------------------
+#
+# A quarta tabela do registro, e a única cujo piso não é janela de freio de
+# segurança — ver `retencao/janelas.py`.
+
+
+@pytest.fixture
+def usuario_auditado(sessao: Session) -> Iterator[Usuario]:
+    """Usuário sentinela que é ator E alvo dos eventos de auditoria do teste.
+
+    `auditoria_usuarios` tem FK para `usuarios` nos dois papéis, então não há
+    evento sem pessoa. O teardown apaga primeiro os eventos que citam este
+    usuário (senão a FK segura a exclusão dele) e depois o próprio usuário —
+    só o que o teste criou, nunca `TRUNCATE`.
+    """
+    linha = _criar_usuario(sessao)
+    yield linha
+    sessao.execute(
+        text("delete from auditoria_usuarios where usuario_id = :id or alvo_usuario_id = :id"),
+        {"id": linha.id},
+    )
+    sessao.commit()
+    _limpar_usuario(sessao, linha.id)
+
+
+def _evento(*, usuario: Usuario, created_at: datetime) -> AuditoriaUsuario:
+    return AuditoriaUsuario(
+        usuario=usuario.email,
+        usuario_id=usuario.id,
+        alvo_usuario_id=usuario.id,
+        alvo_email=usuario.email,
+        acao=AcaoAuditoriaUsuario.ALTERACAO.value,
+        mudancas={"nome": {"de": "Nome Antigo", "para": "Nome Novo"}},
+        created_at=created_at,
+    )
+
+
+def test_auditoria_usuarios_apaga_o_antigo_e_preserva_o_recente(
+    sessao: Session, settings: Settings, usuario_auditado: Usuario
+) -> None:
+    agora = datetime.now(UTC)
+    # 2000 dias > a retenção default de 1825 (5 anos).
+    antigo = _evento(usuario=usuario_auditado, created_at=agora - timedelta(days=2000))
+    recente = _evento(usuario=usuario_auditado, created_at=agora)
+    sessao.add_all([antigo, recente])
+    sessao.commit()
+    antigo_id, recente_id = antigo.id, recente.id
+
+    resumo = expurgar(
+        sessao, settings, tabelas=["auditoria_usuarios"], lote=1000, dry_run=False, agora=agora
+    )
+
+    assert resumo.tabelas["auditoria_usuarios"].apagadas >= 1
+    assert sessao.get(AuditoriaUsuario, antigo_id) is None
+    assert sessao.get(AuditoriaUsuario, recente_id) is not None
+
+
+def test_auditoria_usuarios_lote_menor_que_o_volume_apaga_tudo_ao_fim(
+    sessao: Session, settings: Settings, usuario_auditado: Usuario
+) -> None:
+    """Cinco eventos antigos, lote de dois: ao fim, os cinco saem."""
+    agora = datetime.now(UTC)
+    linhas = [
+        _evento(usuario=usuario_auditado, created_at=agora - timedelta(days=2000, hours=i))
+        for i in range(5)
+    ]
+    sessao.add_all(linhas)
+    sessao.commit()
+    ids = [linha.id for linha in linhas]
+
+    resumo = expurgar(
+        sessao, settings, tabelas=["auditoria_usuarios"], lote=2, dry_run=False, agora=agora
+    )
+
+    assert resumo.tabelas["auditoria_usuarios"].apagadas >= 5
+    for id_ in ids:
+        assert sessao.get(AuditoriaUsuario, id_) is None
+
+
+def test_auditoria_usuarios_dry_run_conta_e_nao_apaga(
+    sessao: Session, settings: Settings, usuario_auditado: Usuario
+) -> None:
+    agora = datetime.now(UTC)
+    antigo = _evento(usuario=usuario_auditado, created_at=agora - timedelta(days=2000))
+    sessao.add(antigo)
+    sessao.commit()
+    antigo_id = antigo.id
+
+    resumo = expurgar(
+        sessao, settings, tabelas=["auditoria_usuarios"], lote=1000, dry_run=True, agora=agora
+    )
+
+    assert resumo.dry_run is True
+    assert resumo.tabelas["auditoria_usuarios"].apagadas >= 1
+    assert sessao.get(AuditoriaUsuario, antigo_id) is not None
+
+
+def test_auditoria_usuarios_retencao_abaixo_do_piso_falha_e_nao_apaga(
+    sessao: Session, settings: Settings, usuario_auditado: Usuario
+) -> None:
+    """Trinta dias violam o piso de um ano — e a recusa fala do PROPÓSITO da
+    tabela, não de um freio de segurança, que aqui não existe.
+    """
+    agora = datetime.now(UTC)
+    antigo = _evento(usuario=usuario_auditado, created_at=agora - timedelta(days=2000))
+    sessao.add(antigo)
+    sessao.commit()
+    antigo_id = antigo.id
+
+    invalida = settings.model_copy(update={"retencao_auditoria_usuarios_dias": 30})
+
+    # Como nas outras tabelas, a trava roda mesmo em dry-run.
+    with pytest.raises(RetencaoInvalidaError):
+        expurgar(
+            sessao, invalida, tabelas=["auditoria_usuarios"], lote=1000, dry_run=True, agora=agora
+        )
+    with pytest.raises(RetencaoInvalidaError) as excinfo:
+        expurgar(
+            sessao, invalida, tabelas=["auditoria_usuarios"], lote=1000, dry_run=False, agora=agora
+        )
+
+    mensagem = str(excinfo.value)
+    assert "auditoria administrativa deixa de responder" in mensagem
+    # A razão errada seria pior que razão nenhuma: não há freio lendo esta tabela.
+    assert "desarmar" not in mensagem
+    assert "margem de segurança aplicada" not in mensagem
+
+    assert sessao.get(AuditoriaUsuario, antigo_id) is not None
+
+
+def test_expurgo_sem_filtro_inclui_auditoria_usuarios(sessao: Session, settings: Settings) -> None:
+    """Sem `--tabela`, a quarta tabela entra junto com as outras três — é o que
+    faz o serviço `api-retencao` do Compose passar a cobri-la sem serviço novo.
+    """
+    agora = datetime.now(UTC)
+
+    resumo = expurgar(sessao, settings, tabelas=None, lote=1000, dry_run=True, agora=agora)
+
+    assert set(resumo.tabelas) == {
+        "tentativas_login",
+        "tokens_recuperacao",
+        "alertas_enviados",
+        "auditoria_usuarios",
+    }
+
+
+# --- os dois tipos de piso ----------------------------------------------------
+
+
+def test_piso_de_freio_de_seguranca_dobra_a_janela() -> None:
+    janela = JanelaSeguranca(descricao="janela qualquer", janela=timedelta(hours=1), origem="teste")
+
+    assert janela.piso_minimo == timedelta(hours=1) * FATOR_MARGEM_SEGURANCA
+
+
+def test_piso_de_valor_de_auditoria_e_o_minimo_declarado_sem_margem() -> None:
+    """O mínimo é o mínimo: sem freio, não há relógio a perder, e dobrá-lo em
+    silêncio inventaria política de retenção.
+    """
+    (piso,) = pisos_auditoria_usuarios(get_settings())
+
+    assert piso.piso_minimo == MINIMO_AUDITORIA_USUARIOS == timedelta(days=365)
+    # E a recusa não empresta o vocabulário do piso de freio.
+    assert "desarmar" not in piso.motivo()
+    assert f"{FATOR_MARGEM_SEGURANCA}x" not in piso.motivo()

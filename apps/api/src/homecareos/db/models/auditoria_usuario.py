@@ -47,11 +47,15 @@ Nunca grava (nem aqui, nem em `mudancas`): `senha_hash`, `mfa_secret`,
 disciplina de `UsuarioOut`/`CAMPOS_PROIBIDOS`
 (`tests/test_api_usuarios.py:63`).
 
-Append-only, como `log_conferencia`: sem `updated_at`, sem `DELETE` na API. Não
-há política de retenção nesta entrega, e isso é dívida conhecida, não descuido:
-a tabela cresce a cada operação administrativa, e decidir por quanto tempo
-guardar auditoria com e-mail dentro é decisão de negócio e de LGPD, não de
-engenharia. Registrada nas limitações conhecidas do `apps/api/README.md`.
+Append-only, como `log_conferencia`: sem `updated_at`, sem `DELETE` na API. A
+única exclusão é por **idade**, pelo expurgo por retenção
+(`auth.auditoria.limpar_auditoria_antiga`, chamado por `retencao/`):
+`RETENCAO_AUDITORIA_USUARIOS_DIAS` (5 anos por padrão), com piso de um ano
+abaixo do qual o expurgo se recusa a rodar — a tabela existe para responder a
+uma pergunta que aparece em investigação, muito depois do evento, e uma
+retenção curta a esvaziaria. Tanto o default quanto o piso são assunção deste
+time, não requisito confirmado pelo cliente/jurídico; ver "Retenção e expurgo
+de dados" no `apps/api/README.md`.
 """
 
 import uuid
