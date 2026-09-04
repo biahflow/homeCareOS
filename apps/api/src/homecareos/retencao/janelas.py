@@ -33,6 +33,8 @@ constantes hardcoded, e não configuração:
   `JANELA_RATE_LIMIT`, hardcoded em `alerts/service.py` (rate limit).
 - `auditoria_usuarios`: nenhum freio — piso de propósito,
   `MINIMO_AUDITORIA_USUARIOS`.
+- `consumos_rate_limit`: `limites.protecao.avaliar_limite`, janela `JANELA`,
+  hardcoded em `limites/protecao.py` (ADR 0005).
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from typing import Protocol
 from homecareos.alerts.service import JANELA_RATE_LIMIT
 from homecareos.auth.recuperacao import JANELA_DO_TETO
 from homecareos.config import Settings
+from homecareos.limites.protecao import JANELA as JANELA_RATE_LIMIT_ROTAS
 
 # Margem de segurança sobre a janela mínima. A janela em si é o piso
 # ABSOLUTO — abaixo dele o freio já está desarmado; rodar exatamente nela é
@@ -183,5 +186,16 @@ def pisos_auditoria_usuarios(settings: Settings) -> list[PisoRetencao]:
                 "MINIMO_AUDITORIA_USUARIOS, declarado em retencao/janelas.py — "
                 "não é configuração, ver a docstring do módulo"
             ),
+        )
+    ]
+
+
+def pisos_consumos_rate_limit(settings: Settings) -> list[PisoRetencao]:
+    del settings  # a janela do freio é constante, não configuração.
+    return [
+        JanelaSeguranca(
+            descricao="janela de contagem do rate limit das rotas caras (ADR 0005)",
+            janela=JANELA_RATE_LIMIT_ROTAS,
+            origem=("JANELA, hardcoded em limites/protecao.py — limites/protecao.avaliar_limite"),
         )
     ]

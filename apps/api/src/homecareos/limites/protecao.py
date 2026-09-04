@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from homecareos.auth.schema import ROTULO_MAQUINA, Principal
@@ -130,3 +132,39 @@ def registrar_consumo(session: Session, *, chave: str, recurso: Recurso) -> None
     consumo que nunca chega ao banco — e um contador que não conta.
     """
     session.add(ConsumoRateLimit(chave=chave, recurso=recurso.value))
+
+
+def limpar_consumos_antigos(
+    session: Session, *, antes_de: datetime, lote: int = 1000, dry_run: bool = False
+) -> int:
+    """Apaga consumos com `created_at < antes_de` e devolve quantos saíram (ou
+    sairiam, em `dry_run`). Commita a cada lote — ver
+    `auth/protecao.limpar_tentativas_antigas` para o motivo do lote.
+
+    A tabela cresce a cada requisição às quatro rotas limitadas e não tem valor
+    além da janela: passada `JANELA`, uma linha aqui já não influencia decisão
+    nenhuma. O que a segura por mais tempo é poder responder "por que tomei um
+    429 na terça?", que é investigação, não freio.
+
+    **`JANELA` é janela de segurança ativa**: apagar dentro dela devolve cota a
+    quem acabou de estourar o limite. Quem garante que isso não acontece é o
+    piso de `retencao/janelas.pisos_consumos_rate_limit`, não esta função.
+    """
+    condicao = ConsumoRateLimit.created_at < antes_de
+    if dry_run:
+        total = session.scalar(select(func.count()).select_from(ConsumoRateLimit).where(condicao))
+        return int(total or 0)
+
+    total = 0
+    while True:
+        subquery = select(ConsumoRateLimit.id).where(condicao).limit(lote)
+        resultado = cast(
+            "CursorResult[Any]",
+            session.execute(delete(ConsumoRateLimit).where(ConsumoRateLimit.id.in_(subquery))),
+        )
+        session.commit()
+        apagadas = resultado.rowcount
+        total += int(apagadas)
+        if apagadas < lote:
+            break
+    return total
