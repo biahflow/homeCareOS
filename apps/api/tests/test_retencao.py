@@ -36,11 +36,13 @@ from homecareos.config import Settings, get_settings
 from homecareos.db.models import (
     AlertaEnviado,
     AuditoriaUsuario,
+    ConsumoRateLimit,
     TentativaLogin,
     TokenRecuperacao,
     Usuario,
 )
 from homecareos.db.session import get_sessionmaker
+from homecareos.limites.protecao import JANELA as JANELA_RATE_LIMIT_ROTAS
 from homecareos.retencao import cli as retencao_cli
 from homecareos.retencao.errors import RetencaoConfigError, RetencaoInvalidaError
 from homecareos.retencao.janelas import (
@@ -48,6 +50,7 @@ from homecareos.retencao.janelas import (
     MINIMO_AUDITORIA_USUARIOS,
     JanelaSeguranca,
     pisos_auditoria_usuarios,
+    pisos_consumos_rate_limit,
 )
 from homecareos.retencao.schema import ResumoExpurgo
 from homecareos.retencao.service import expurgar
@@ -639,9 +642,16 @@ def test_auditoria_usuarios_retencao_abaixo_do_piso_falha_e_nao_apaga(
     assert sessao.get(AuditoriaUsuario, antigo_id) is not None
 
 
-def test_expurgo_sem_filtro_inclui_auditoria_usuarios(sessao: Session, settings: Settings) -> None:
-    """Sem `--tabela`, a quarta tabela entra junto com as outras três — é o que
-    faz o serviço `api-retencao` do Compose passar a cobri-la sem serviço novo.
+def test_expurgo_sem_filtro_cobre_todas_as_tabelas_do_registro(
+    sessao: Session, settings: Settings
+) -> None:
+    """Sem `--tabela`, toda tabela registrada entra junto — é o que faz o serviço
+    `api-retencao` do Compose cobrir uma tabela nova sem serviço novo.
+
+    A lista é escrita à mão de propósito, em vez de comparada com `NOMES_TABELAS`
+    (o que seria tautológico): quem acrescentar uma tabela ao registro vê este
+    teste falhar e precisa confirmar que ela **deve mesmo** ser expurgada pelo
+    cron. É a pergunta que ninguém faz sozinho.
     """
     agora = datetime.now(UTC)
 
@@ -652,6 +662,7 @@ def test_expurgo_sem_filtro_inclui_auditoria_usuarios(sessao: Session, settings:
         "tokens_recuperacao",
         "alertas_enviados",
         "auditoria_usuarios",
+        "consumos_rate_limit",
     }
 
 
@@ -674,3 +685,103 @@ def test_piso_de_valor_de_auditoria_e_o_minimo_declarado_sem_margem() -> None:
     # E a recusa não empresta o vocabulário do piso de freio.
     assert "desarmar" not in piso.motivo()
     assert f"{FATOR_MARGEM_SEGURANCA}x" not in piso.motivo()
+
+
+# --- consumos_rate_limit ------------------------------------------------------
+
+
+@pytest.fixture
+def chave_de_consumo(sessao: Session) -> Iterator[str]:
+    """Chave sentinela própria deste teste — o banco é compartilhado."""
+    chave = f"usuario:{uuid.uuid4()}"
+    yield chave
+    sessao.execute(text("delete from consumos_rate_limit where chave = :chave"), {"chave": chave})
+    sessao.commit()
+
+
+def _consumo(*, chave: str, created_at: datetime) -> ConsumoRateLimit:
+    return ConsumoRateLimit(chave=chave, recurso="upload_documento", created_at=created_at)
+
+
+def test_consumos_rate_limit_apaga_o_antigo_e_preserva_o_recente(
+    sessao: Session, settings: Settings, chave_de_consumo: str
+) -> None:
+    agora = datetime.now(UTC)
+    antigo = _consumo(chave=chave_de_consumo, created_at=agora - timedelta(days=60))
+    recente = _consumo(chave=chave_de_consumo, created_at=agora)
+    sessao.add_all([antigo, recente])
+    sessao.commit()
+    antigo_id, recente_id = antigo.id, recente.id
+
+    resumo = expurgar(
+        sessao, settings, tabelas=["consumos_rate_limit"], lote=1000, dry_run=False, agora=agora
+    )
+
+    assert resumo.tabelas["consumos_rate_limit"].apagadas >= 1
+    assert sessao.get(ConsumoRateLimit, antigo_id) is None
+    assert sessao.get(ConsumoRateLimit, recente_id) is not None
+
+
+def test_consumos_rate_limit_dry_run_conta_e_nao_apaga(
+    sessao: Session, settings: Settings, chave_de_consumo: str
+) -> None:
+    agora = datetime.now(UTC)
+    antigo = _consumo(chave=chave_de_consumo, created_at=agora - timedelta(days=60))
+    sessao.add(antigo)
+    sessao.commit()
+    antigo_id = antigo.id
+
+    resumo = expurgar(
+        sessao, settings, tabelas=["consumos_rate_limit"], lote=1000, dry_run=True, agora=agora
+    )
+
+    assert resumo.dry_run is True
+    assert resumo.tabelas["consumos_rate_limit"].apagadas >= 1
+    assert sessao.get(ConsumoRateLimit, antigo_id) is not None
+
+
+def test_consumos_rate_limit_retencao_dentro_da_janela_do_freio_e_recusada(
+    sessao: Session, settings: Settings, chave_de_consumo: str
+) -> None:
+    """Expurgar dentro da janela do freio devolve cota a quem estourou o limite.
+
+    É o mesmo perigo de `tentativas_login`: a tabela não é só log, é o contador
+    que uma decisão de segurança consulta. A retenção mínima aqui é o dobro da
+    janela de contagem do ADR 0005 — e como a janela é de uma hora, qualquer
+    retenção em dias passa. Este teste existe para o dia em que alguém achar que
+    "uma hora de retenção basta, a janela é de uma hora".
+    """
+    agora = datetime.now(UTC)
+    antigo = _consumo(chave=chave_de_consumo, created_at=agora - timedelta(days=60))
+    sessao.add(antigo)
+    sessao.commit()
+    antigo_id = antigo.id
+
+    # 0 dias viola o piso (2x a janela de 1h do freio).
+    invalida = settings.model_copy(update={"retencao_consumos_rate_limit_dias": 0})
+
+    with pytest.raises(RetencaoInvalidaError) as excinfo:
+        expurgar(
+            sessao,
+            invalida,
+            tabelas=["consumos_rate_limit"],
+            lote=1000,
+            dry_run=False,
+            agora=agora,
+        )
+    mensagem = str(excinfo.value)
+    assert "rate limit" in mensagem
+    assert "desarmar" in mensagem  # é piso de freio, não de propósito
+
+    assert sessao.get(ConsumoRateLimit, antigo_id) is not None
+
+
+def test_o_piso_do_contador_acompanha_a_janela_do_freio() -> None:
+    """O piso é derivado da janela real, não de um número copiado.
+
+    Se alguém mudar `limites/protecao.JANELA`, o piso muda junto — é o mesmo
+    contrato das outras janelas hardcoded do módulo.
+    """
+    (piso,) = pisos_consumos_rate_limit(get_settings())
+
+    assert piso.piso_minimo == JANELA_RATE_LIMIT_ROTAS * FATOR_MARGEM_SEGURANCA

@@ -1,7 +1,7 @@
 """Templates das mensagens de WhatsApp, um por tipo de alerta.
 
 O texto padrão é o da issue #9 (revisto depois do primeiro envio real, ver
-`README.md#o-texto-do-alerta-é-escrito-para-o-whatsapp-não-para-a-tela-issue-36`),
+`README.md#o-texto-do-alerta-é-escrito-para-o-whatsapp-não-para-a-tela`),
 com placeholders nomeados (`{operadora}`, `{deadline}`, ...). `ALERTAS_TEMPLATES`
 sobrescreve qualquer um deles sem deploy — é texto que quem opera quer ajustar
 sem passar por engenharia.

@@ -764,14 +764,7 @@ volumétrico chega antes da aplicação e é trabalho da borda (proxy, CDN, WAF)
 que este repositório não descreve. O que este freio contém é abuso de uso
 legítimo: script mal escrito, integração em laço, curiosidade cara.
 
-**`consumos_rate_limit` ainda não tem retenção, e precisa ter.** A tabela cresce
-a cada consumo das quatro rotas limitadas, e entra na política de "Retenção e
-expurgo de dados" (abaixo) como uma quinta entrada — com a ressalva que vale
-para toda tabela lida por um freio: a janela de uma hora deste limite
-(`limites/protecao.JANELA`) é janela de segurança ativa, e um expurgo que apague
-dentro dela **devolve cota a quem acabou de estourar o limite**. É a mesma trava
-que protege `tentativas_login` de ser expurgada dentro da janela do freio de
-login. Até essa ligação existir, ninguém apaga essas linhas.
+**`consumos_rate_limit` entra na política de retenção** (abaixo), com piso de duas horas: a janela de uma hora deste limite (`limites/protecao.JANELA`) é janela de segurança ativa, e um expurgo que apagasse dentro dela **devolveria cota a quem acabou de estourar o limite**. É a mesma trava que protege `tentativas_login` de ser expurgada dentro da janela do freio de login.
 
 ## Retenção e expurgo de dados
 
@@ -821,6 +814,7 @@ que quem configura a retenção pode baixar junto com ela não é piso.
 | `RETENCAO_TOKENS_RECUPERACAO_DIAS` | 30 | o valor de auditoria é curto; o token em si já morre em `SENHA_RESET_VALIDADE_MINUTOS` (30 min) |
 | `RETENCAO_ALERTAS_ENVIADOS_DIAS` | 90 | `mensagem` contém nome de paciente — reter menos é a decisão mais segura, desde que fique muito acima do cooldown de 24h |
 | `RETENCAO_AUDITORIA_USUARIOS_DIAS` | 1825 (5 anos) | auditoria de quem deu acesso a prontuário se consulta anos depois, em investigação ou auditoria externa; é prova de quem autorizou o quê, não log operacional como os 90 dias de `alertas_enviados`. Piso de 365 dias (1 ano), abaixo do qual o expurgo recusa rodar |
+| `RETENCAO_CONSUMOS_RATE_LIMIT_DIAS` | 30 dias | contador do freio das rotas caras (ADR 0005); perde utilidade passada a janela de uma hora, e os 30 dias existem para investigar um 429 depois. Piso de 2h — apagar dentro da janela devolveria cota a quem estourou o limite |
 | `RETENCAO_TAMANHO_LOTE` | 1000 | tamanho do lote de apagar, com commit por lote |
 
 **Os quatro defaults de dias — e o piso de 1 ano da auditoria — são uma

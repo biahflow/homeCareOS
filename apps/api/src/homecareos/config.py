@@ -192,6 +192,12 @@ class Settings(BaseSettings):
     # não multiplicar round-trips numa tabela com anos de atraso acumulado,
     # pequeno o bastante para não segurar lock nem crescer o WAL de um jeito
     # perceptível numa tabela que recebe insert a cada login.
+    # Contador do rate limit das rotas caras (ADR 0005). Cresce a cada
+    # requisição às quatro rotas limitadas e perde utilidade rápido: passada a
+    # janela de uma hora do freio, a linha não influencia decisão nenhuma. Os 30
+    # dias existem para investigação ("por que tomei 429 na terça?"), não para o
+    # freio. ASSUNÇÃO deste time, como os demais valores de retenção.
+    retencao_consumos_rate_limit_dias: int = 30
     retencao_tamanho_lote: int = 1000
 
     # Rate limit das rotas caras, por identidade do principal (ADR 0005, issue

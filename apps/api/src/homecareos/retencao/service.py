@@ -30,11 +30,13 @@ from homecareos.auth.auditoria import limpar_auditoria_antiga
 from homecareos.auth.protecao import limpar_tentativas_antigas
 from homecareos.auth.recuperacao import limpar_tokens_antigos
 from homecareos.config import Settings
+from homecareos.limites.protecao import limpar_consumos_antigos
 from homecareos.retencao.errors import RetencaoConfigError, RetencaoInvalidaError
 from homecareos.retencao.janelas import (
     PisoRetencao,
     pisos_alertas_enviados,
     pisos_auditoria_usuarios,
+    pisos_consumos_rate_limit,
     pisos_tentativas_login,
     pisos_tokens_recuperacao,
 )
@@ -88,6 +90,13 @@ def _apagar_auditoria_usuarios(
     return limpar_auditoria_antiga(session, antes_de=antes_de, lote=lote, dry_run=dry_run)
 
 
+def _apagar_consumos_rate_limit(
+    session: Session, *, antes_de: datetime, agora: datetime, lote: int, dry_run: bool
+) -> int:
+    del agora  # consumos_rate_limit não tem exceção por idade — só o corte.
+    return limpar_consumos_antigos(session, antes_de=antes_de, lote=lote, dry_run=dry_run)
+
+
 TABELAS: tuple[Tabela, ...] = (
     Tabela(
         chave="tentativas_login",
@@ -112,6 +121,12 @@ TABELAS: tuple[Tabela, ...] = (
         retencao_dias=lambda s: s.retencao_auditoria_usuarios_dias,
         pisos=pisos_auditoria_usuarios,
         apagar=_apagar_auditoria_usuarios,
+    ),
+    Tabela(
+        chave="consumos_rate_limit",
+        retencao_dias=lambda s: s.retencao_consumos_rate_limit_dias,
+        pisos=pisos_consumos_rate_limit,
+        apagar=_apagar_consumos_rate_limit,
     ),
 )
 
