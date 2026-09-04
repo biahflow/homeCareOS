@@ -30,3 +30,55 @@ export class ApiError extends Error {
     this.detail = payload.detail;
   }
 }
+
+/**
+ * Prefixo que o Pydantic v2 coloca na frente da mensagem de um `ValueError`
+ * levantado por um `model_validator`. É artefato de serialização, não texto que
+ * a API escreveu — exibi-lo faria a pessoa ler "Value error," antes da frase que
+ * de fato explica o que ela digitou errado.
+ */
+const PREFIXO_VALUE_ERROR = /^Value error,\s*/;
+
+function mensagemDoDetalhe(item: unknown): string | undefined {
+  if (typeof item !== "object" || item === null || !("msg" in item)) {
+    return undefined;
+  }
+  const msg = (item as { msg?: unknown }).msg;
+  return typeof msg === "string" ? msg.replace(PREFIXO_VALUE_ERROR, "") : undefined;
+}
+
+/**
+ * As mensagens de validação que a API escreveu, tiradas de `error.detalhes`.
+ *
+ * Existe porque o 422 de validação de corpo tem a mensagem útil **no lugar
+ * errado para quem só olha `message`**: `api/errors.py` responde a um
+ * `RequestValidationError` com `mensagem: "parâmetros inválidos"` fixo e joga o
+ * que a regra realmente disse (`"documentos_glosados não pode ser maior que
+ * documentos_enviados"`, por exemplo) em `detalhes`, no formato do Pydantic.
+ * Mostrar só `erro.message` entrega "parâmetros inválidos" a quem precisa saber
+ * qual parâmetro e por quê.
+ *
+ * Devolve `[]` quando não há detalhe legível — e aí quem chama continua com
+ * `erro.message`, que é o certo para 403, 404, 409 e para o 422 de
+ * `HTTPException` (esse já traz a frase pronta em `mensagem`).
+ *
+ * Não classifica causa nem reordena: a regra é da API, e o texto sai como ela o
+ * escreveu.
+ */
+export function detalhesDeValidacao(erro: ApiError): string[] {
+  const corpo = erro.detail;
+  if (typeof corpo !== "object" || corpo === null || !("error" in corpo)) {
+    return [];
+  }
+  const envelope = (corpo as { error?: unknown }).error;
+  if (typeof envelope !== "object" || envelope === null || !("detalhes" in envelope)) {
+    return [];
+  }
+  const detalhes = (envelope as { detalhes?: unknown }).detalhes;
+  if (!Array.isArray(detalhes)) {
+    return [];
+  }
+  return detalhes
+    .map(mensagemDoDetalhe)
+    .filter((mensagem): mensagem is string => mensagem !== undefined && mensagem !== "");
+}

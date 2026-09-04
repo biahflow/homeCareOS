@@ -282,3 +282,247 @@ export type EuResposta = UsuarioOut | MaquinaOut;
 export function ehUsuario(resposta: LoginResposta | EuResposta): resposta is UsuarioOut {
   return "id" in resposta;
 }
+
+/* Relatórios e métricas — `/api/relatorios` (issue #8). */
+
+/** Tipo do documento ingerido (`db/models/enums.py:TipoDocumento`). */
+export type TipoDocumento = "evolucao" | "ficha_visita" | "boletim" | "matmed";
+
+/**
+ * Gravidade da linha no painel de conferência, **decidida pela API**.
+ *
+ * Ela existe exatamente para o cliente não reimplementar a regra "aprovado
+ * verde, problema amarelo, incompleto vermelho": o mapeamento status →
+ * severidade é decisão de produto e mora em `reports/conferencia.severidade_de`.
+ * Quem consome traduz **severidade** em estilo; derivar a cor do `status`
+ * recriaria a regra num segundo lugar, para divergir dela na primeira mudança.
+ */
+export type Severidade = "CRITICO" | "ATENCAO" | "OK";
+
+/**
+ * Uma linha do relatório de conferência: um documento da competência, com o
+ * problema encontrado e a ação necessária já resolvidos pela API.
+ *
+ * `paciente_nome` é **dado de paciente**. Vale para ele o que vale para a
+ * descrição de uma pendência: não vai para `console.log`, para query string nem
+ * para mensagem de erro que suba para telemetria. O CSV do mesmo relatório
+ * carrega a mesma coluna e fica salvo na máquina de quem baixou.
+ */
+export interface LinhaConferencia {
+  documento_id: string;
+  tipo: TipoDocumento;
+  /** Competência no formato "AAAA-MM". */
+  competencia: string;
+  status: DocumentoStatus;
+  severidade: Severidade;
+  /** ISO 8601 com fuso (a API grava `timestamptz`). */
+  recebido_em: string;
+  /**
+   * `AAAA-MM-DD` lido da última extração, ou nulo quando não há extração ainda
+   * ou o campo veio ilegível — o relatório do dia não cai por extração ruim.
+   */
+  data_atendimento: string | null;
+  paciente_id: string | null;
+  paciente_nome: string | null;
+  operadora_id: string | null;
+  operadora_nome: string | null;
+  pendencias_abertas: number;
+  /**
+   * Descrições das pendências **não resolvidas** unidas por `" | "`, e `""`
+   * quando não há nenhuma aberta. String vazia é "nenhum problema em aberto",
+   * não "problema desconhecido".
+   */
+  problema_encontrado: string;
+  acao_necessaria: string;
+  /** Menor deadline entre as pendências não resolvidas, ou nulo quando não há. */
+  deadline: string | null;
+}
+
+/**
+ * Os filtros do relatório de conferência — os mesmos para o JSON paginado e
+ * para o CSV (`filtro_conferencia` é uma dependency compartilhada na API).
+ *
+ * Nenhum deles carrega dado de prontuário: `paciente_id` é identificador, e o
+ * nome do paciente nunca vira filtro de URL.
+ */
+export interface FiltrosConferencia {
+  /** Competência "AAAA-MM". */
+  competencia?: string;
+  status?: DocumentoStatus;
+  operadora_id?: string;
+  paciente_id?: string;
+  /** Data "AAAA-MM-DD": recebidos a partir dela, inclusive. */
+  data_inicio?: string;
+  /** Data "AAAA-MM-DD": recebidos até ela, **dia inteiro incluído**. */
+  data_fim?: string;
+  /** Só documentos com pendência não resolvida. */
+  apenas_pendentes?: boolean;
+}
+
+export interface RelatorioConferenciaParams extends FiltrosConferencia {
+  /** Itens por página. Padrão 50, máximo 200 (`api/pagination.py`). */
+  limite?: number;
+  offset?: number;
+}
+
+/**
+ * O que a **conferência mediu**: pendência detectada antes do envio à operadora.
+ *
+ * Nunca se funde com {@link MetricasGlosaInformada}. Ver
+ * {@link MetricasCompetencia}.
+ */
+export interface MetricasSistema {
+  documentos: number;
+  /**
+   * Contagem por status **atual** do documento. É foto do agora, não histórico:
+   * um documento que teve problema, foi corrigido e virou `liberado` aparece
+   * como `liberado`. Por isso ele sozinho não serve de indicador de qualidade —
+   * quanto melhor a correção funciona, melhor a foto fica.
+   */
+  por_status: Record<string, number>;
+  /** Documentos com ao menos uma pendência, **em qualquer status**, inclusive resolvidas. */
+  documentos_com_pendencia: number;
+  /** Razão 0..1 (não percentual), arredondada em 4 casas pela API. */
+  taxa_documentos_com_pendencia: number;
+  pendencias_abertas: number;
+  pendencias_vencidas: number;
+  pendencias_proximos_7_dias: number;
+  /** Nulo quando nenhuma pendência foi resolvida ainda: zero seria "resolvem instantaneamente". */
+  tempo_medio_resolucao_horas: number | null;
+}
+
+/**
+ * O que foi **informado à mão**: glosa, o que a operadora recusou depois do
+ * envio, digitado de um demonstrativo.
+ *
+ * `fonte` é obrigatório na API justamente para este bloco poder dizer, na tela,
+ * de onde o número veio.
+ */
+export interface MetricasGlosaInformada {
+  documentos_enviados: number;
+  documentos_glosados: number;
+  /** Razão 0..1 (não percentual), arredondada em 4 casas pela API. */
+  taxa_glosa: number;
+  /** **Inteiro em centavos**, nunca reais. Nulo quando não informado. */
+  valor_glosado_centavos: number | null;
+  horas_conferencia: number | null;
+  fonte: string;
+}
+
+/**
+ * Os dois blocos de uma competência, **lado a lado e nomeados — nunca fundidos**.
+ *
+ * `sistema` mede o que a conferência pegou **antes** do envio; `glosa_informada`
+ * mede o que a operadora recusou **depois**, digitado de um demonstrativo. São
+ * medidas de origens diferentes: somá-las, dividir uma pela outra ou apresentá-las
+ * num indicador único de "eficácia" inventa uma relação que o dado não sustenta —
+ * e é decisão de produto que ninguém tomou.
+ *
+ * `glosa_informada` é `null` quando **não há baseline registrado** para a
+ * competência. `null` significa "ninguém informou", **nunca zero**: renderizar
+ * 0% de glosa onde não há baseline afirmaria que a conferência zerou a glosa —
+ * exatamente o número que justifica o produto, inventado.
+ */
+export interface MetricasCompetencia {
+  /** Competência "AAAA-MM". */
+  competencia: string;
+  sistema: MetricasSistema;
+  glosa_informada: MetricasGlosaInformada | null;
+}
+
+/** Quanto trabalho cada operadora dá na janela pedida. */
+export interface MetricasOperadora {
+  /** Nulo agrupa os documentos que ninguém conseguiu vincular a uma operadora. */
+  operadora_id: string | null;
+  nome: string;
+  documentos: number;
+  documentos_com_pendencia: number;
+  /** Razão 0..1 (não percentual). */
+  taxa_documentos_com_pendencia: number;
+}
+
+/** Documentos recebidos por dia, com a fronteira do dia fixada em UTC pela API. */
+export interface VolumeDia {
+  /** Data "AAAA-MM-DD". */
+  data: string;
+  documentos: number;
+}
+
+/** Antes/depois honesto: a **mesma** medida (glosa informada) nas duas pontas. */
+export interface ComparacaoGlosa {
+  competencia_inicial: string;
+  competencia_final: string;
+  /** Razão 0..1 (não percentual). */
+  taxa_glosa_inicial: number;
+  taxa_glosa_final: number;
+  /** `(final - inicial) * 100`. Queda de glosa é negativa. */
+  variacao_pontos_percentuais: number;
+}
+
+export interface MetricasResponse {
+  /** Em ordem **crescente** de competência, como a API as devolve. */
+  competencias: MetricasCompetencia[];
+  por_operadora: MetricasOperadora[];
+  por_dia: VolumeDia[];
+  /**
+   * Nulo enquanto menos de duas competências da janela tiverem baseline: não há
+   * como comparar contra uma ponta que não existe, e inventá-la (com zero, ou
+   * com a média das demais) transformaria o indicador numa ficção.
+   */
+  comparacao_glosa: ComparacaoGlosa | null;
+}
+
+export interface MetricasParams {
+  /** Competência "AAAA-MM". Sem janela, a API devolve as 12 mais recentes. */
+  competencia_inicio?: string;
+  competencia_fim?: string;
+  operadora_id?: string;
+}
+
+/**
+ * Corpo de `PUT /api/relatorios/baseline` — dado digitado de um demonstrativo
+ * da operadora.
+ *
+ * Duas armadilhas do contrato:
+ *
+ * - **`valor_glosado_centavos` é inteiro em centavos**, nunca reais. Quem
+ *   preenche a partir de um campo em reais converte multiplicando por 100 com
+ *   aritmética inteira; um `float` no caminho erra por centavo, e uma conversão
+ *   esquecida erra por 100x.
+ * - **`operadora_id` ausente é o consolidado de todas as operadoras**, e não
+ *   "operadora desconhecida". São linhas diferentes no banco (há um índice
+ *   parcial só para o consolidado), e a métrica sem filtro de operadora usa
+ *   exatamente a consolidada.
+ *
+ * `fonte` é obrigatório (`min_length=1`): é o que permite à tela dizer de onde
+ * o número veio, ao lado dele.
+ */
+export interface BaselineUpsert {
+  /** Competência "AAAA-MM". */
+  competencia: string;
+  /** `null`/ausente = consolidado de **todas** as operadoras. */
+  operadora_id?: string | null;
+  documentos_enviados: number;
+  /** A API recusa (422) quando maior que `documentos_enviados`. */
+  documentos_glosados: number;
+  valor_glosado_centavos?: number | null;
+  horas_conferencia?: number | null;
+  fonte: string;
+  observacao?: string | null;
+}
+
+/** Baseline como a API o devolve. */
+export interface BaselineOut {
+  id: string;
+  competencia: string;
+  operadora_id: string | null;
+  documentos_enviados: number;
+  documentos_glosados: number;
+  /** **Inteiro em centavos.** */
+  valor_glosado_centavos: number | null;
+  horas_conferencia: number | null;
+  fonte: string;
+  observacao: string | null;
+  created_at: string;
+  updated_at: string;
+}
