@@ -35,6 +35,154 @@ export interface UploadParams {
   idempotencyKey: string;
 }
 
+/* Documentos em conferência — listagem e detalhe de `/api/documentos`. */
+
+/**
+ * Um documento na listagem — **sem** extração e sem validações.
+ *
+ * Elas existem só no detalhe ({@link DocumentoDetalhe}), e isso é decisão da
+ * API: cada extração carrega o prontuário inteiro em `campos_extraidos`, e uma
+ * página de 50 documentos traria 50 prontuários para uma tela que mostra status
+ * e competência.
+ *
+ * `tipo` usa {@link TipoDocumento}, declarado adiante junto dos tipos de
+ * relatório: é o mesmo enum do banco (`db/models/enums.py`), não uma segunda
+ * lista.
+ */
+export interface DocumentoListItem {
+  id: string;
+  tipo: TipoDocumento;
+  /** Competência no formato "AAAA-MM". */
+  competencia: string;
+  status: DocumentoStatus;
+  /**
+   * Página de origem quando o documento veio de um PDF multi-página — um PDF de
+   * dez páginas vira dez documentos. **Nula** quando não há página de origem
+   * (`documentos.pagina` é nullable no banco), e nulo aqui não é "página zero".
+   */
+  pagina: number | null;
+  paciente_id: string | null;
+  operadora_id: string | null;
+  /** ISO 8601 com fuso (a API grava `timestamptz`). */
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * A última extração do documento, como a API a resume.
+ *
+ * `campos_extraidos` e `confianca_por_campo` são `dict[str, Any]` na API — não
+ * há schema fechado no contrato HTTP, porque o schema de extração
+ * (`extraction/schema.py:EvolucaoProntuario`) evolui sem versionar esta rota.
+ * Por isso `unknown` e não `any`: quem exibe é **obrigado** a checar o tipo de
+ * cada valor antes de usá-lo. Um `any` aqui devolveria a garantia ao acaso, e
+ * um campo novo com formato inesperado derrubaria a tela que existe justamente
+ * para mostrar que a extração saiu ruim.
+ */
+export interface ExtracaoResumo {
+  id: string;
+  /** Os campos que o provider de Vision leu. Valor `null` é "não leu", não "vazio". */
+  campos_extraidos: Record<string, unknown>;
+  /**
+   * Confiança agregada, 0..1 — a **média simples** da confiança por campo
+   * (`extraction/claude.py:_confianca`). Não é percentual, e não é qualidade do
+   * documento: é o quanto o próprio modelo declarou ter lido.
+   */
+  confianca: number;
+  /**
+   * Confiança por campo, 0..1, em três níveis que o provider produz: `0.0` para
+   * campo que ele listou como ilegível, `0.5` para campo lido com dúvida
+   * (`campos_incertos`) e `1.0` para o resto. **A faixa do meio é a que importa
+   * ao conferente** — é o campo que foi lido, mas vale conferir contra o papel.
+   *
+   * Os valores chegam como `unknown` porque a API os tipa como `Any`; quem
+   * exibe checa se é número antes de tratá-lo como um.
+   */
+  confianca_por_campo: Record<string, unknown>;
+  /** Vazio quando nenhum provider real rodou (ver `provider`). */
+  modelo: string;
+  /**
+   * Provider que extraiu. O literal `"null"` é o `NullExtractionProvider`: sem
+   * `ANTHROPIC_API_KEY` configurada a extração não roda, todo campo entra como
+   * ilegível e a confiança sai `0.0`. É configuração, não falha — e a tela
+   * precisa poder dizer isso em vez de apresentar zeros como se fossem leitura.
+   */
+  provider: string;
+  created_at: string;
+}
+
+/** Resultado da aplicação de uma regra de operadora sobre um documento. */
+export type ResultadoValidacao = "aprovado" | "reprovado";
+
+/**
+ * Uma regra aplicada ao documento e o que ela decidiu.
+ *
+ * `detalhe` é o texto que a validação escreveu ("Campo 'carimbo_legivel' foi
+ * marcado como ilegível pela extração") — é ele que se mostra, não `regra_id`.
+ * O id da regra é referência técnica: **não existe endpoint que o resolva para
+ * o público desta tela** (`GET /api/regras` exige coordenador), então traduzi-lo
+ * para um nome quebraria a tela da conferente com 403.
+ *
+ * A API devolve as validações **sem ordenar** (`obter_documento` não tem
+ * `order_by`): a ordem é a que o Postgres devolver, e quem exibe ordena por
+ * `created_at` se a ordem importar.
+ */
+export interface ValidacaoResumo {
+  id: string;
+  regra_id: string;
+  resultado: ResultadoValidacao;
+  detalhe: string;
+  created_at: string;
+}
+
+/**
+ * O documento com tudo o que a conferência precisa — menos o próprio arquivo.
+ *
+ * **`arquivo_url` não é uma URL.** Apesar do nome, o campo guarda a *chave do
+ * objeto no storage* (`documentos/{id}/{sha256}.png`, montada em
+ * `intake/service.py`), e **nenhum endpoint da API serve o arquivo nem devolve
+ * URL assinada**: `storage.presigned_url()` existe e não é chamado por rota
+ * nenhuma. Usá-lo como `src` de imagem ou `href` de link produz um caminho
+ * relativo quebrado; montar a URL do MinIO no cliente também não funciona (rede
+ * interna do Compose, e sem credencial). Trate como referência técnica —
+ * serve para achar o objeto no storage, não para abrir o documento.
+ */
+export interface DocumentoDetalhe extends DocumentoListItem {
+  /** **Chave do storage, não endereço.** Ver a nota da interface. */
+  arquivo_url: string;
+  /** `null` enquanto nenhuma extração foi registrada para o documento. */
+  extracao: ExtracaoResumo | null;
+  validacoes: ValidacaoResumo[];
+}
+
+/** Filtros de `GET /api/documentos`. Nenhum deles carrega dado de prontuário. */
+export interface ListarDocumentosParams {
+  /** Competência "AAAA-MM". A API compara como texto, sem normalizar. */
+  competencia?: string;
+  status?: DocumentoStatus;
+  operadora_id?: string;
+  paciente_id?: string;
+  /** Itens por página. Padrão 50, máximo 200 (`api/pagination.py`). */
+  limite?: number;
+  offset?: number;
+}
+
+/**
+ * Resposta de `POST /api/documentos/{id}/revalidar`: onde o documento parou e
+ * quanto ainda falta.
+ *
+ * `status` é o status **depois** da reclassificação, e revalidar pode piorá-lo:
+ * de `resolvido` o documento volta para `problema`/`incompleto` quando as
+ * regras reprovam de novo (`db/models/enums.py:DocumentoStatus`). Não é
+ * confirmação de que deu certo — é o resultado, seja ele qual for.
+ */
+export interface RevalidacaoResponse {
+  documento_id: string;
+  status: DocumentoStatus;
+  /** Pendências não resolvidas do documento depois da revalidação. */
+  pendencias_abertas: number;
+}
+
 /* Paginação — envelope comum a toda listagem da API. */
 
 /**

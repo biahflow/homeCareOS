@@ -25,7 +25,10 @@ export function Topbar({
   usuario: UsuarioDaShell;
 }) {
   const pathname = usePathname();
-  const current = NAV_ITEMS.find((item) => item.href === pathname);
+  // Mesma regra do NavList: a sub-rota continua pertencendo à seção.
+  const current = NAV_ITEMS.find(
+    (item) => item.href === pathname || pathname.startsWith(`${item.href}/`),
+  );
   const paginaDeConta = PAGINAS_DE_CONTA[pathname];
 
   return (
