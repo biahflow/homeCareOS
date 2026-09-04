@@ -3,10 +3,18 @@
     python -m homecareos.auth.cli criar --nome "Ana" --email ana@x.com \\
         --papel conferente
 
-É CLI e não endpoint porque a matriz de papéis aprovada não diz quem
-administra usuário. Decidir isso sem o cliente seria inventar requisito, e um
-`POST /api/usuarios` aberto ao papel errado é pior que não ter endpoint nenhum:
-quem pudesse criar usuário poderia criar um `gestor` e escalar sozinho.
+Administrar usuário pela API existe desde o ADR 0004
+(`POST /api/usuarios`, do coordenador), e este CLI **não** foi substituído por
+ele: continua sendo o caminho do **primeiro** acesso — não há quem administre
+antes do primeiro coordenador — e o único caminho para criar **`gestor`**, que a
+API recusa atribuir.
+
+A recusa não é lacuna: `gestor` não é um degrau acima do coordenador, é outro
+eixo da matriz (ADR 0001) — lê a operação inteira e é o único que escreve
+baseline. Um coordenador que criasse um gestor estaria se dando acesso a dado de
+gestão que o papel dele não tem, bastando entrar na conta criada. Exigir acesso
+ao servidor para essa operação é o que a mantém fora do alcance de uma sessão de
+coordenador comprometida.
 
 **A senha nunca vem em argumento de linha de comando.** Ela é lida por
 `getpass`, sem eco. Um `--senha` ficaria no histórico do shell, apareceria em

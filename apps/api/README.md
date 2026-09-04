@@ -194,10 +194,15 @@ sem isso, o tempo de resposta diria quem está cadastrado.
 | `GET /api/relatorios/metricas`, `GET /api/relatorios/baseline` | — | ✅ | ✅ |
 | `PUT /api/relatorios/baseline` | — | — | ✅ |
 | `POST /api/alertas/varredura`, `GET /api/alertas` | — | ✅ | ✅ |
+| `GET /api/usuarios`, `POST /api/usuarios`, `PATCH /api/usuarios/{id}` | — | ✅ | — |
 
 `conferente` está contido em `coordenador`. `gestor` **não** é superconjunto de
 ninguém: é outro eixo — lê a operação inteira, não a executa, e é o único que
 escreve baseline, que é dado de gestão e não de conferência.
+
+É essa forma da matriz — eixo, e não degrau — que faz o coordenador **não** poder
+criar nem promover a `gestor` em `/api/usuarios`: ver "Administração de usuários"
+abaixo e o [ADR 0004](../../docs/adr/0004-administracao-de-usuarios-pela-api.md).
 
 **A autorização por papel só se aplica a sessão de usuário.** Requisição
 autenticada por `X-API-Key` passa por qualquer checagem de papel: a chave sempre
@@ -397,7 +402,123 @@ MFA_CODIGOS_RECUPERACAO=8    # quantos códigos a ativação gera
   requisito de produto, e inventá-lo aqui trancaria gente para fora sem ninguém
   ter decidido.
 
+### Administração de usuários
+
+Quem administra usuário é o **coordenador** — decisão de produto tomada com o
+cliente, registrada no [ADR 0004](../../docs/adr/0004-administracao-de-usuarios-pela-api.md).
+Três rotas, e nenhuma mais:
+
+| rota | o que faz |
+| --- | --- |
+| `GET /api/usuarios` | lista, paginada, com filtro por `ativo` |
+| `POST /api/usuarios` | cria e devolve, **uma única vez**, o token de definição de senha |
+| `PATCH /api/usuarios/{id}` | altera nome, papel e `ativo` |
+
+Este é o endpoint mais perigoso da API — quem cria usuário decide quem entra — e
+cada regra abaixo existe por causa de um ataque concreto.
+
+#### O coordenador não cria nem promove a `gestor`
+
+Papéis atribuíveis por esta API: **`conferente` e `coordenador`**. Tentar
+`gestor`, na criação ou no `PATCH`, responde **403** dizendo que ele é criado por
+linha de comando.
+
+`gestor` não é um degrau acima do coordenador: é outro eixo da matriz. Um
+coordenador que criasse um gestor estaria **se dando acesso a dado de gestão que
+o papel dele não tem** — bastaria criar a conta e entrar nela. Recusar só na
+criação deixaria a mesma escalada em dois passos, e é por isso que a promoção é
+recusada junto.
+
+#### A senha nunca passa por quem administra
+
+A criação grava o hash de um valor **aleatório e descartado** — uma senha que
+ninguém conhece, nem quem criou a conta — e devolve um token de recuperação:
+
+```json
+{
+  "usuario": {"id": "…", "nome": "Ana Souza", "email": "ana@exemplo.com",
+              "papel": "conferente", "ativo": true},
+  "token_definicao_senha": "…"
+}
+```
+
+Quem administra repassa `{FRONTEND_BASE_URL}/redefinir-senha?token=<token>` à
+pessoa pelo canal que já usa, e ela escolhe a própria senha. **É a única vez em
+que o token aparece** — mesma regra dos códigos de recuperação do MFA: o banco
+guarda só o SHA-256 dele, e nenhum endpoint o mostra de novo.
+
+Por que assim, e não uma senha temporária no corpo da requisição: quem administra
+não deve conhecer a senha de ninguém, e uma senha escolhida pelo administrador
+tende a virar um padrão (`Mudar@123`) reusado na operação inteira. O fluxo de
+redefinição já existe, tem uso único e expiração.
+
+A conta e o token entram no **mesmo commit**. Se o token não puder ser emitido
+(teto de `SENHA_RESET_MAX_POR_HORA`, que só alcança uma conta nova se estiver
+configurado como zero), a criação é desfeita e a resposta é **503** — uma conta
+sem caminho de primeiro acesso não pode nascer em silêncio.
+
+#### Ninguém se tranca fora, e ninguém se promove
+
+| tentativa | resposta |
+| --- | --- |
+| alterar o próprio papel | 403 — é o único papel cuja alteração interessa a quem ataca |
+| desativar a própria conta | 403 |
+| desativar **ou rebaixar** o último coordenador ativo | 409 |
+
+A última existe porque sem coordenador ativo não sobra quem administre usuário
+nem quem edite regra, e a saída seria acesso ao banco. Ela cobre o rebaixamento
+junto com a desativação — as duas esvaziam a coordenação do mesmo jeito. Com
+sessão de usuário ela é defesa em profundidade (quem chama é sempre um
+coordenador ativo e não pode agir sobre a própria conta, então sempre resta ele);
+para a `X-API-Key`, que passa por qualquer checagem de papel e não tem "si
+mesmo", ela é a única trava.
+
+#### Desativar, nunca excluir — e desativar revoga as sessões
+
+**Não existe `DELETE`**, e não é omissão: `log_conferencia.usuario_id` referencia
+`usuarios`, e apagar uma pessoa apagaria a resposta a "quem fez esta ação?", que
+é a razão de existir da issue #30.
+
+Desativar **revoga todas as sessões abertas** da pessoa, na mesma transação.
+`usuarios.ativo = false` sozinho já derruba o acesso na requisição seguinte, mas
+sem a revogação uma reativação futura ressuscitaria os cookies antigos —
+inclusive o de um aparelho que ela não tem mais. E sem revogar, quem foi
+desligado às pressas seguiria navegando por até `SESSAO_DURACAO_HORAS` (12h) com
+o cookie que já tem, que é exatamente o cenário em que se desliga alguém às
+pressas.
+
+#### Nada de credencial na resposta
+
+Nenhuma resposta destas rotas carrega `senha_hash`, `mfa_secret` nem
+`mfa_ultimo_passo`: a saída é sempre a projeção explícita `UsuarioOut`, a mesma
+do login e do `GET /api/auth/eu` — nunca o model serializado. E-mail duplicado
+responde **409 com mensagem neutra**, sem dizer nome nem papel de quem já está
+cadastrado: uma sessão de coordenador comprometida não pode virar oráculo de
+enumeração.
+
+#### Limitações honestas
+
+- **Não há auditoria da administração de usuário.** `log_conferencia` é ligada a
+  documento e não serve para registrar "quem promoveu fulano a coordenador". Uma
+  tabela de auditoria administrativa é migration, e fica para a sua própria
+  issue.
+- **O token de definição de senha expira em `SENHA_RESET_VALIDADE_MINUTOS` (30),
+  e não há rota para reemiti-lo.** Se o administrador demorar a repassá-lo, a
+  pessoa precisa pedir um link em `POST /api/auth/senha/esqueci` — que depende de
+  SMTP configurado. Sem SMTP, o caminho volta a ser o CLI.
+- **Uma operação com um único coordenador não consegue desligá-lo pela API.** O
+  sistema recusa a alteração que deixaria zero coordenador ativo, mas nada obriga
+  a existir dois. Criar um segundo coordenador antes é o caminho.
+- **Rebaixar um gestor é possível e não é reversível pela API.** O `PATCH` recusa
+  *atribuir* `gestor`, não *alterar* quem já é: um coordenador pode mover um
+  gestor para `conferente`, e devolvê-lo ao papel exige o CLI. A alternativa
+  reversível, quando a intenção é só tirar o acesso, é `ativo: false`.
+
 ### Criar o primeiro usuário
+
+O CLI continua sendo o caminho para o **primeiro** acesso — não há quem
+administre antes do primeiro coordenador — e para criar **gestor**, que a API
+não atribui (ver "Administração de usuários" acima):
 
 ```bash
 cd apps/api
@@ -428,8 +549,12 @@ que a ausência:
 - **sem política que obrigue MFA**: o segundo fator existe desde a issue #35
   (ver "Segundo fator (MFA por TOTP)" acima), mas ativar é decisão de cada
   pessoa — não há configuração que o exija por papel ou para a operação inteira;
-- **sem CRUD de usuário via API**: criar, editar, desativar e listar usuário é
-  operação de banco ou CLI. A matriz aprovada não diz quem administra usuário, e
-  decidir isso sem o cliente seria inventar requisito — um `POST /api/usuarios`
-  aberto ao papel errado deixaria qualquer um criar um `gestor` e escalar
-  sozinho.
+- **sem auditoria da administração de usuário**: administrar usuário pela API
+  existe desde o ADR 0004 (ver "Administração de usuários" acima), mas não há
+  registro de quem criou, promoveu ou desativou quem — `log_conferencia` é ligada
+  a documento, e uma tabela de auditoria administrativa é migration com a sua
+  própria issue;
+- **sem criação de `gestor` pela API**: ele continua sendo criado por
+  `python -m homecareos.auth.cli criar`, que exige acesso ao servidor. Não é
+  lacuna: `gestor` é outro eixo da matriz, e deixá-lo atribuível por quem
+  coordena seria escalada de privilégio disfarçada de conveniência.
