@@ -84,12 +84,20 @@ def receber_upload(
     paciente_id: uuid.UUID | None = None,
     operadora_id: uuid.UUID | None = None,
     tipo: TipoDocumento = TipoDocumento.EVOLUCAO,
+    usuario: str = USUARIO_SISTEMA,
+    usuario_id: uuid.UUID | None = None,
 ) -> ResultadoUpload:
     """Ingere um upload: valida, fatia em páginas, persiste e dispara a extração.
 
     `tipo` default `EVOLUCAO` porque é o documento que o técnico envia para
     comprovar a visita; a classificação automática do tipo é outro módulo
     (`homecareos.classification`), fora do escopo desta fase.
+
+    `usuario`/`usuario_id` identificam quem fez o upload (issue #30) e
+    seguem até o dispatcher, que os repassa para `log_conferencia` na
+    classificação automática. O default `USUARIO_SISTEMA`/`None` cobre quem
+    chama sem credencial de pessoa (cron, script) — o router sempre passa a
+    identidade do `Principal` autenticado.
     """
     validar_upload(conteudo, filename)
     paginas = split_pages(conteudo)
@@ -124,7 +132,9 @@ def receber_upload(
         repository.desfazer()
         return _resolver_colisao(repository, idempotency_key, paginas, exc)
 
-    _disparar_extracao(repository, dispatcher, registrados, paginas)
+    _disparar_extracao(
+        repository, dispatcher, registrados, paginas, usuario=usuario, usuario_id=usuario_id
+    )
     return ResultadoUpload(documentos=registrados, ja_existia=False)
 
 
@@ -217,11 +227,14 @@ def _disparar_extracao(
     dispatcher: ExtractionDispatcher,
     registrados: list[DocumentoRegistrado],
     paginas: list[PageImage],
+    *,
+    usuario: str,
+    usuario_id: uuid.UUID | None,
 ) -> None:
     """Dispara a extração de cada página. Falha aqui não desfaz o upload."""
     for documento, pagina in zip(registrados, paginas, strict=True):
         try:
-            dispatcher.dispatch(documento.id, pagina)
+            dispatcher.dispatch(documento.id, pagina, usuario=usuario, usuario_id=usuario_id)
         except Exception as exc:
             # Nenhuma falha de extração pode derrubar um upload já commitado.
             repository.registrar_log(

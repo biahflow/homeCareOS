@@ -23,6 +23,7 @@ from homecareos.intake.pdf import PageImage
 from homecareos.intake.repository import DocumentoRegistrado
 from homecareos.intake.service import (
     ACAO_EXTRACAO_FALHOU,
+    USUARIO_SISTEMA,
     ResultadoUpload,
     receber_upload,
 )
@@ -50,6 +51,8 @@ def _receber(
     filename: str = "evolucao.pdf",
     paciente_id: uuid.UUID | None = None,
     operadora_id: uuid.UUID | None = None,
+    usuario: str = USUARIO_SISTEMA,
+    usuario_id: uuid.UUID | None = None,
 ) -> ResultadoUpload:
     return receber_upload(
         conteudo=conteudo,
@@ -61,6 +64,8 @@ def _receber(
         dispatcher=dispatcher,
         paciente_id=paciente_id,
         operadora_id=operadora_id,
+        usuario=usuario,
+        usuario_id=usuario_id,
     )
 
 
@@ -296,10 +301,17 @@ def test_falha_de_extracao_em_uma_pagina_nao_impede_as_outras() -> None:
     repository, storage = FakeDocumentoRepository(), FakeStorage()
 
     class SoAPrimeiraFalha(FakeDispatcher):
-        def dispatch(self, documento_id: uuid.UUID, pagina: PageImage) -> None:
+        def dispatch(
+            self,
+            documento_id: uuid.UUID,
+            pagina: PageImage,
+            *,
+            usuario: str = "sistema",
+            usuario_id: uuid.UUID | None = None,
+        ) -> None:
             if pagina.numero == 1:
                 raise RuntimeError("provider caiu na primeira página")
-            super().dispatch(documento_id, pagina)
+            super().dispatch(documento_id, pagina, usuario=usuario, usuario_id=usuario_id)
 
     dispatcher = SoAPrimeiraFalha()
 
@@ -478,3 +490,41 @@ def test_upload_associa_paciente_e_operadora() -> None:
     assert len(resultado.documentos) == 2
     assert all(d.paciente_id == paciente for d in repository.criados)
     assert all(d.operadora_id == operadora for d in repository.criados)
+
+
+# --- issue #30: identidade real na auditoria do upload -------------------------
+
+
+def test_usuario_e_usuario_id_sao_repassados_ao_dispatcher() -> None:
+    """Quem fez o upload chega até o dispatcher — dados simples, não o `Principal`."""
+    repository, storage, dispatcher = (
+        FakeDocumentoRepository(),
+        FakeStorage(),
+        FakeDispatcher(),
+    )
+    usuario_id = uuid.uuid4()
+
+    resultado = _receber(
+        make_pdf(2),
+        repository=repository,
+        storage=storage,
+        dispatcher=dispatcher,
+        usuario="ana@exemplo.com",
+        usuario_id=usuario_id,
+    )
+
+    assert len(resultado.documentos) == 2
+    assert dispatcher.autores == [("ana@exemplo.com", usuario_id)] * 2
+
+
+def test_sem_usuario_o_default_e_sistema_com_usuario_id_nulo() -> None:
+    """Sem autor (cron, script, chamada antiga), o comportamento não muda."""
+    repository, storage, dispatcher = (
+        FakeDocumentoRepository(),
+        FakeStorage(),
+        FakeDispatcher(),
+    )
+
+    _receber(make_pdf(1), repository=repository, storage=storage, dispatcher=dispatcher)
+
+    assert dispatcher.autores == [(USUARIO_SISTEMA, None)]

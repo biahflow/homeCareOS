@@ -1,17 +1,23 @@
 """Testes do `POST /api/documentos`. Sem Postgres, sem MinIO, sem rede.
 
 As dependências do router (repositório, storage e dispatcher) são substituídas
-por `app.dependency_overrides`, então `get_session` nunca é chamado e nenhuma
-conexão de banco é aberta.
+por `app.dependency_overrides`, então `get_documento_repository`/`get_document_storage`/
+`get_extraction_dispatcher` nunca tocam Postgres nem MinIO de verdade. A
+autenticação por `X-API-Key` (`AUTH_HEADERS`) só cria uma `Session` do
+SQLAlchemy sem conexão real (construção é preguiçosa) — nenhuma query chega a
+rodar nesse caminho, então isto continua sem round-trip a Postgres.
 """
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 
+from homecareos.auth.dependencies import principal_atual
+from homecareos.auth.schema import Papel, Principal
 from homecareos.config import Settings, get_settings
 from homecareos.intake.router import (
     get_document_storage,
@@ -248,3 +254,33 @@ def test_storage_indisponivel_responde_503(
 
 def test_health_continua_respondendo_com_o_router_registrado(api: TestClient) -> None:
     assert api.get("/health").json() == {"status": "ok"}
+
+
+# --- issue #30: a identidade da requisição chega ao dispatcher -----------------
+
+
+def test_upload_por_x_api_key_repassa_rotulo_api_e_usuario_id_nulo(
+    api: TestClient, dispatcher: FakeDispatcher
+) -> None:
+    """Compatibilidade deliberada: a chave de máquina nunca vira pessoa."""
+    resposta = _upload(api, make_pdf(1))
+
+    assert resposta.status_code == 201
+    assert dispatcher.autores == [("api", None)]
+
+
+def test_upload_com_sessao_de_pessoa_repassa_email_e_usuario_id(
+    api: TestClient, dispatcher: FakeDispatcher
+) -> None:
+    """`criar_documentos` injeta o `Principal` e repassa a identidade real."""
+    usuario_id = uuid.uuid4()
+    app.dependency_overrides[principal_atual] = lambda: Principal(
+        tipo="usuario", usuario_id=usuario_id, papel=Papel.CONFERENTE, rotulo="ana@exemplo.com"
+    )
+    try:
+        resposta = _upload(api, make_pdf(2))
+    finally:
+        del app.dependency_overrides[principal_atual]
+
+    assert resposta.status_code == 201
+    assert dispatcher.autores == [("ana@exemplo.com", usuario_id)] * 2

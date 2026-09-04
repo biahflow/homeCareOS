@@ -135,12 +135,26 @@ class FakeDocumentoRepository:
 
 @dataclass
 class FakeDispatcher:
-    """Conta as chamadas — é a contagem que prova que o reenvio não re-extrai."""
+    """Conta as chamadas — é a contagem que prova que o reenvio não re-extrai.
+
+    `autores` guarda `(usuario, usuario_id)` recebido em cada chamada, na
+    mesma ordem de `chamadas` — separado dela para não quebrar os testes que
+    já comparam `chamadas` a `(documento_id, pagina)`.
+    """
 
     chamadas: list[tuple[uuid.UUID, int]] = field(default_factory=list)
+    autores: list[tuple[str, uuid.UUID | None]] = field(default_factory=list)
 
-    def dispatch(self, documento_id: uuid.UUID, pagina: PageImage) -> None:
+    def dispatch(
+        self,
+        documento_id: uuid.UUID,
+        pagina: PageImage,
+        *,
+        usuario: str = "sistema",
+        usuario_id: uuid.UUID | None = None,
+    ) -> None:
         self.chamadas.append((documento_id, pagina.numero))
+        self.autores.append((usuario, usuario_id))
 
 
 @dataclass
@@ -150,6 +164,13 @@ class FailingDispatcher:
     erro: Exception = field(default_factory=lambda: RuntimeError("provider de extração caiu"))
     chamadas: list[uuid.UUID] = field(default_factory=list)
 
-    def dispatch(self, documento_id: uuid.UUID, pagina: PageImage) -> None:
+    def dispatch(
+        self,
+        documento_id: uuid.UUID,
+        pagina: PageImage,
+        *,
+        usuario: str = "sistema",
+        usuario_id: uuid.UUID | None = None,
+    ) -> None:
         self.chamadas.append(documento_id)
         raise self.erro
