@@ -773,3 +773,80 @@ export interface BaselineOut {
   created_at: string;
   updated_at: string;
 }
+
+/* Alertas de WhatsApp — "/api/alertas" (issue #9). */
+
+/**
+ * Os quatro alertas que a issue #9 pede (`alerts/schema.py:TipoAlerta`).
+ *
+ * União de string literal, e não o `string` que a API devolve em
+ * {@link AlertaItem}: o valor sempre vem de um destes quatro, e modelá-lo
+ * assim dá exaustividade nos rótulos — um quinto valor novo na API quebra a
+ * compilação aqui, em vez de aparecer sem rótulo na tela.
+ */
+export type TipoAlerta =
+  | "documento_incompleto_critico"
+  | "deadline_competencia"
+  | "volume_anormal"
+  | "pendencia_parada";
+
+/**
+ * Desfecho de uma tentativa de notificação (`alerts/schema.py:StatusAlerta`).
+ *
+ * `suprimido` só aparece pela supressão por **rate limit** (teto de mensagens
+ * por hora por destinatário). A supressão por **cooldown** (mesmo assunto,
+ * mesmo número, 24h) não grava linha nenhuma — não existe um quarto valor para
+ * ela, porque ela nunca chega a virar linha (`alerts/service.py:124-133`). Uma
+ * tela que liste `AlertaItem` sem dizer isso faz quem lê concluir que a
+ * ausência de uma linha prova que o alerta saiu, o que é falso para a maioria
+ * das supressões.
+ */
+export type StatusAlerta = "enviado" | "falha" | "suprimido";
+
+/**
+ * Filtros de `GET /api/alertas`.
+ *
+ * O parâmetro chega na API como `status` — o nome do parâmetro Python é
+ * `status_filtro`, mas o alias na URL (`Query(alias="status")`) é este, e é o
+ * nome que este tipo usa.
+ */
+export interface ListarAlertasParams {
+  tipo?: TipoAlerta;
+  status?: StatusAlerta;
+  documento_id?: string;
+  /** Itens por página. Padrão 50, máximo 200 (`api/pagination.py`). */
+  limite?: number;
+  offset?: number;
+}
+
+/**
+ * Uma linha do log de alertas, como a API a devolve
+ * (`alerts/router.py:AlertaItem`).
+ *
+ * `tipo` e `status` saem como `string` na resposta da API — o modelo Pydantic
+ * do endpoint não força o enum na serialização —, mas os valores gravados vêm
+ * sempre de {@link TipoAlerta} e {@link StatusAlerta}; por isso os dois campos
+ * aqui usam as uniões, e não `string`.
+ *
+ * `mensagem` carrega o **nome do paciente** dentro do texto (é o texto que
+ * saiu no WhatsApp), e `destinatario` é o telefone de quem recebeu. A API os
+ * expõe deliberadamente: "auditar um envio é saber o que foi dito"
+ * (`alerts/router.py:49-56`). Por isso nenhum dos dois vai para `console.log`,
+ * para a URL nem para armazenamento do navegador — a mesma disciplina do token
+ * de {@link UsuarioCriadoOut}.
+ *
+ * `detalhe` só vem preenchido quando `status` é `"falha"` (o motivo do erro de
+ * envio) ou `"suprimido"` (por que foi suprimido); em `"enviado"` é sempre
+ * `null`.
+ */
+export interface AlertaItem {
+  id: string;
+  tipo: TipoAlerta;
+  chave: string;
+  destinatario: string;
+  mensagem: string;
+  status: StatusAlerta;
+  detalhe: string | null;
+  documento_id: string | null;
+  created_at: string;
+}
