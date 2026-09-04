@@ -2,6 +2,7 @@
 
 import { X } from "lucide-react";
 import { useState } from "react";
+import { itensDoPapel } from "./nav-items";
 import { SidebarContent } from "./SidebarContent";
 import { Topbar } from "./Topbar";
 import type { UsuarioDaShell } from "./usuario";
@@ -14,11 +15,17 @@ export function AppShell({
   usuario: UsuarioDaShell;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  // O filtro por papel acontece aqui, no ponto mais alto que já conhece o
+  // `papel` — e não dentro da navegação, que passa a receber a lista pronta e
+  // não precisa saber quem está logado. As duas `SidebarContent` (desktop e
+  // gaveta) leem a mesma lista, senão um item restrito apareceria só numa das
+  // larguras.
+  const itens = itensDoPapel(usuario.papel);
 
   return (
     <div className="min-h-svh lg:grid lg:grid-cols-[254px_1fr]">
       <aside className="hidden border-r border-line bg-white px-3 lg:block">
-        <SidebarContent />
+        <SidebarContent itens={itens} />
       </aside>
 
       {menuOpen && (
@@ -38,7 +45,7 @@ export function AppShell({
             >
               <X size={18} />
             </button>
-            <SidebarContent onNavigate={() => setMenuOpen(false)} />
+            <SidebarContent itens={itens} onNavigate={() => setMenuOpen(false)} />
           </div>
         </div>
       )}

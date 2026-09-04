@@ -1,8 +1,10 @@
 import { ApiError } from "./erros";
 import type {
   AtualizarPendenciaParams,
+  AtualizarUsuarioParams,
   BaselineOut,
   BaselineUpsert,
+  CriarUsuarioParams,
   DocumentoDetalhe,
   DocumentoListItem,
   EsqueciSenhaParams,
@@ -11,6 +13,7 @@ import type {
   LinhaConferencia,
   ListarDocumentosParams,
   ListarPendenciasParams,
+  ListarUsuariosParams,
   LoginParams,
   LoginResposta,
   MetricasParams,
@@ -29,6 +32,7 @@ import type {
   RevalidacaoResponse,
   UploadParams,
   UploadResponse,
+  UsuarioCriadoOut,
   UsuarioOut,
 } from "./tipos";
 
@@ -797,4 +801,152 @@ export async function registrarBaseline(
     opcoes,
   );
   return (await response.json()) as BaselineOut;
+}
+
+/* Usuários — `/api/usuarios` (issue #30, ADR 0004). */
+
+const CAMINHO_USUARIOS = "/api/usuarios";
+
+/**
+ * `GET /api/usuarios`: a página atual do cadastro de pessoas da operação.
+ *
+ * **O router inteiro é do coordenador** (`main.py` monta `usuarios_router` com
+ * `exigir_papel(Papel.COORDENADOR)`), e isso vale para as três funções deste
+ * bloco: conferente e gestor recebem **403** já na listagem. Não é como
+ * `/documentos` e `/pendencias`, que os três papéis leem e só a ação restringe
+ * — aqui não há nada para ler sem o papel. Esconder a tela de quem não pode é
+ * ergonomia; a autoridade é esta resposta.
+ *
+ * `ativo` tem três estados (ver {@link ListarUsuariosParams}), e `undefined`
+ * significa "todos" — não "ativos".
+ *
+ * A ordenação é fixa no servidor (`nome`, depois `email`) e **não é
+ * parametrizável**: não há o que oferecer numa interface de ordenação. O
+ * desempate por e-mail existe para a paginação por offset ser estável entre
+ * homônimos; reordenar no cliente desfaria essa estabilidade.
+ *
+ * `paginacao.total` é o total **filtrado** — é ele, e não `data.length`, que
+ * diz se há próxima página.
+ *
+ * `cache: "no-store"` porque a resposta é o retrato de quem tem acesso ao
+ * sistema **agora**: uma lista que volta do cache mostraria como ativa uma
+ * conta que outro coordenador acabou de desligar.
+ */
+export async function listarUsuarios(
+  baseUrl: string,
+  params: ListarUsuariosParams = {},
+  opcoes?: OpcoesRequisicao,
+): Promise<RespostaPaginada<UsuarioOut>> {
+  const response = await requisitar(
+    baseUrl,
+    `${CAMINHO_USUARIOS}${queryString({
+      ativo: params.ativo,
+      limite: params.limite,
+      offset: params.offset,
+    })}`,
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as RespostaPaginada<UsuarioOut>;
+}
+
+/**
+ * `POST /api/usuarios`: cria a conta e emite o token de definição de senha.
+ *
+ * O 201 devolve `token_definicao_senha`, que **não volta em endpoint nenhum** —
+ * ver {@link UsuarioCriadoOut} para o que quem chama é obrigado a fazer com ele.
+ *
+ * Três erros que quem trata **precisa** distinguir, porque exigem reações
+ * diferentes:
+ *
+ * - **403** — o papel pedido não é atribuível por esta API. Hoje é só `gestor`,
+ *   e a mensagem diz o caminho certo (`python -m homecareos.auth.cli criar`, no
+ *   servidor), ao contrário do 403 genérico de autorização. Não é 422: o valor
+ *   é um papel legítimo do sistema, o que falta é autoridade para atribuí-lo
+ *   por aqui. Um seletor que não ofereça `gestor` evita o caso comum, mas não
+ *   dispensa este tratamento — a lista de papéis atribuíveis é do servidor e
+ *   pode mudar sem a interface saber.
+ * - **409** — e-mail já cadastrado. A mensagem é **deliberadamente neutra** e
+ *   não diz de quem é a conta: quem tem uma sessão de coordenador comprometida
+ *   não pode usar a criação como oráculo para descobrir nome e papel de quem já
+ *   está cadastrado. Reescrevê-la para algo que confirme a existência da conta
+ *   desfaz a proteção.
+ * - **503** — o teto de emissão de token foi atingido e **o usuário NÃO foi
+ *   criado**: a API dá `rollback` na criação junto, porque uma conta sem token
+ *   nasceria sem nenhum caminho de primeiro acesso. É o erro mais fácil de
+ *   apresentar errado. Quem trata não pode sugerir que a conta existe, nem
+ *   mandar procurá-la na lista — o que cabe é dizer que nada foi criado e que
+ *   tentar de novo é o caminho.
+ *
+ * O **422** é o corpo inválido (nome vazio, e-mail vazio, papel fora do enum) e
+ * chega no envelope de validação: a frase útil está em `detalhes`, não em
+ * `message` — use `detalhesDeValidacao`.
+ */
+export async function criarUsuario(
+  baseUrl: string,
+  params: CriarUsuarioParams,
+  opcoes?: OpcoesRequisicao,
+): Promise<UsuarioCriadoOut> {
+  const response = await requisitar(
+    baseUrl,
+    CAMINHO_USUARIOS,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    },
+    opcoes,
+  );
+  return (await response.json()) as UsuarioCriadoOut;
+}
+
+/**
+ * `PATCH /api/usuarios/{id}`: altera nome, papel e situação. Campo omitido é
+ * campo não alterado — ver {@link AtualizarUsuarioParams}.
+ *
+ * As recusas são verificadas **em ordem**, e a primeira que bate é a que
+ * chega; quem trata precisa dos dois códigos e da mensagem, porque o mesmo
+ * status significa coisas diferentes:
+ *
+ * 1. **404** — o usuário não existe (id de uma lista velha).
+ * 2. **403** — papel não atribuível (mesma regra e mesma frase de
+ *    {@link criarUsuario}: `gestor` não se promove por aqui).
+ * 3. **403** — `não é possível alterar o próprio papel`. A trava existe porque
+ *    o próprio papel é o único cuja alteração interessa a quem ataca, e ela é o
+ *    que faz uma escalada precisar de duas contas em vez de uma. De quebra
+ *    evita o rebaixamento acidental, que é irreversível para quem o comete:
+ *    conferente não administra usuário.
+ * 4. **403** — `não é possível desativar a própria conta`.
+ * 5. **409** — a alteração deixaria a operação **sem nenhum coordenador
+ *    ativo**. Cobre os dois jeitos de chegar lá: desativar o último
+ *    coordenador e rebaixá-lo. Não é erro de digitação nem estado transitório —
+ *    tentar de novo dá o mesmo, e a saída é promover outra pessoa antes.
+ *
+ * As duas recusas de auto-serviço (3 e 4) se evitam na interface — não oferecer
+ * controle de papel nem de desativação na linha de quem está logado —, mas
+ * evitar não é tratar: o 403 continua chegando de aba antiga, de outra sessão e
+ * de papel alterado no servidor no meio do turno.
+ *
+ * O sucesso devolve o usuário já alterado, e ele **não é o retrato completo**:
+ * `ativo: false` revoga na mesma transação todas as sessões da pessoa, e nada
+ * disso aparece na resposta. Releia a listagem em vez de remendar a linha na
+ * mão.
+ */
+export async function atualizarUsuario(
+  baseUrl: string,
+  usuarioId: string,
+  params: AtualizarUsuarioParams,
+  opcoes?: OpcoesRequisicao,
+): Promise<UsuarioOut> {
+  const response = await requisitar(
+    baseUrl,
+    `${CAMINHO_USUARIOS}/${encodeURIComponent(usuarioId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    },
+    opcoes,
+  );
+  return (await response.json()) as UsuarioOut;
 }
