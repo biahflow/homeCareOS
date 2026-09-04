@@ -1,0 +1,14 @@
+# Contexto de build da API (contexto: ./apps/api). O Dockerfile copia
+# pyproject.toml, uv.lock, README.md, src/ e alembic.ini — o resto é peso.
+
+# O venv da máquina tem binários da plataforma local e 265 MB; a imagem monta
+# o seu próprio com `uv sync --frozen`.
+.venv/
+
+__pycache__/
+**/__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+.env
