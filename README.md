@@ -19,6 +19,23 @@ curl -f localhost:8001/health
 # {"status":"ok"}
 ```
 
+Se `pyproject.toml`/`uv.lock` mudar (dependência nova), é preciso rebuild antes
+do próximo `up`/`run`:
+
+```bash
+docker compose --profile tools build && docker compose up -d
+```
+
+O `--profile tools` importa: `api`, `api-migrate`, `api-seed` e `api-alertas`
+compartilham o mesmo Dockerfile mas constroem imagens **separadas**, e um
+`build` sem ele alcança só a do `api`.
+
+Esquecer o rebuild não passa em silêncio: o container recusa arrancar e
+`docker compose logs api` diz o que fazer, em vez de morrer num
+`ModuleNotFoundError` sem contexto. A verificação acontece no arranque, então
+um container que já estava no ar quando o `uv.lock` mudou segue rodando —
+`docker compose restart api` força a checagem.
+
 Migrations e seed são ferramentas sob demanda (não sobem com `up`, porque
 dependem de código de outras trilhas):
 
