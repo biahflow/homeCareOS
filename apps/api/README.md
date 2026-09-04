@@ -99,7 +99,8 @@ também na docstring de `src/homecareos/reports/csv_export.py`.
 
 Quatro alertas (issue #9), enviados por um gateway de WhatsApp e registrados em
 `alertas_enviados`. Endpoints sob `/api/alertas` — protegidos por `X-API-Key`
-como todo o resto de `/api/*`:
+como todo o resto de `/api/*`, e restritos a `coordenador` e `gestor` desde a
+issue #30 (`exigir_papel`, `conferente` recebe 403):
 
 - `POST /varredura` — roda os quatro detectores e envia o que for novo. É o
   mesmo trabalho de `python -m homecareos.alerts.scan`

@@ -1,4 +1,4 @@
-import { FileStack, ListChecks, BarChart3, Users } from "lucide-react";
+import { FileStack, ListChecks, BarChart3, Users, BellRing } from "lucide-react";
 import type { ComponentType } from "react";
 import type { Papel } from "@homecareos/contracts";
 
@@ -22,6 +22,9 @@ export const NAV_ITEMS: NavItem[] = [
   // então conferente e gestor não têm nem o que ler ali. Nas outras três o papel
   // decide o que se pode *fazer*, não se a tela abre.
   { href: "/usuarios", label: "Usuários", icon: Users, papeis: ["coordenador"] },
+  // `/api/alertas` inteira exige coordenador ou gestor (issue #30) — conferente
+  // não tem nem o que ler ali, mesmo motivo de `/usuarios` acima.
+  { href: "/alertas", label: "Alertas", icon: BellRing, papeis: ["coordenador", "gestor"] },
 ];
 
 /**

@@ -1,5 +1,6 @@
 import { ApiError } from "./erros";
 import type {
+  AlertaItem,
   AtualizarPendenciaParams,
   AtualizarUsuarioParams,
   BaselineOut,
@@ -11,6 +12,7 @@ import type {
   EuResposta,
   FiltrosConferencia,
   LinhaConferencia,
+  ListarAlertasParams,
   ListarDocumentosParams,
   ListarPendenciasParams,
   ListarUsuariosParams,
@@ -990,4 +992,74 @@ export async function atualizarUsuario(
     opcoes,
   );
   return (await response.json()) as UsuarioOut;
+}
+
+/* Alertas de WhatsApp — `/api/alertas` (issue #9). */
+
+const CAMINHO_ALERTAS = "/api/alertas";
+
+/**
+ * `GET /api/alertas`: a página atual do log de notificações de WhatsApp.
+ *
+ * **O router inteiro exige `coordenador` ou `gestor`** (`main.py` monta
+ * `alertas_router` com `exigir_papel(Papel.COORDENADOR, Papel.GESTOR)`, desde a
+ * issue #30) — conferente recebe **403** já na listagem, como em `/api/usuarios`.
+ *
+ * **O log não registra toda supressão, e quem consome este cliente precisa
+ * saber disso antes de usar a ausência de uma linha como prova de alguma
+ * coisa.** Duas defesas anti-bombardeio existem (`alerts/service.py`), e só
+ * uma delas grava:
+ *
+ * - **Cooldown** (mesmo assunto, mesmo destinatário, 24h): a supressão é
+ *   **silenciosa** — nenhuma linha é gravada. A varredura roda de minuto em
+ *   minuto, e registrar cada supressão encheria a tabela com centenas de
+ *   linhas por dia por alerta, escondendo as falhas de verdade no meio do
+ *   ruído. Não há como listar "quantas vezes um aviso foi represado por
+ *   cooldown" por esta rota — o dado não existe.
+ * - **Rate limit** (teto de mensagens por hora por destinatário): **grava**
+ *   linha com `status: "suprimido"`, porque esta supressão é anômala — alguma
+ *   notificação real se perdeu e alguém precisa poder descobrir isso depois.
+ *   `detalhe` traz quantos envios houve na janela e qual era o teto.
+ *
+ * Ordenação é fixa no servidor (`created_at` decrescente, mais recente
+ * primeiro) e **não é parametrizável** — não há o que oferecer numa interface
+ * de ordenação.
+ *
+ * `tipo` e `status` em {@link ListarAlertasParams} são uniões de string
+ * literal; um valor fora delas é erro de compilação aqui, não 422 em runtime.
+ *
+ * **Na resposta, porém, o tipo é mais estreito que o dado.** A API declara os
+ * dois campos de {@link AlertaItem} como `str` puro (`alerts/router.py`): o
+ * `enum.StrEnum` fecha a escrita, não a leitura. Um detector novo no backend —
+ * que é exatamente o tipo de coisa que se acrescenta sem tocar no front —
+ * chegaria como um valor fora da união, e um `Record` indexado por ele devolve
+ * `undefined`. Quem mapear esses campos para rótulo ou cor precisa de fallback;
+ * sem ele, o dado desaparece da tela em silêncio, que é o pior desfecho
+ * possível num log de auditoria.
+ *
+ * `paginacao.total` é o total **filtrado** — é ele, e não `data.length`, que
+ * diz se há próxima página.
+ *
+ * `cache: "no-store"` porque o log muda a cada varredura (a cada minuto, pelo
+ * cron): uma resposta em cache mostraria como "não enviado" um alerta que
+ * acabou de sair.
+ */
+export async function listarAlertas(
+  baseUrl: string,
+  params: ListarAlertasParams = {},
+  opcoes?: OpcoesRequisicao,
+): Promise<RespostaPaginada<AlertaItem>> {
+  const response = await requisitar(
+    baseUrl,
+    `${CAMINHO_ALERTAS}${queryString({
+      tipo: params.tipo,
+      status: params.status,
+      documento_id: params.documento_id,
+      limite: params.limite,
+      offset: params.offset,
+    })}`,
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as RespostaPaginada<AlertaItem>;
 }

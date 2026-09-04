@@ -32,9 +32,10 @@ import { apiUrl, opcoesAutenticadas } from "@/lib/api-servidor";
 import { usuarioDaSessao } from "@/lib/sessao";
 
 /**
- * Avisos que a própria aplicação pede pela URL ao mandar alguém para cá — hoje
- * só o de quem tentou abrir `/usuarios` sem ser coordenador. Esta é a tela para
- * onde o login leva, e por isso a que recebe quem foi recusado em outra.
+ * Avisos que a própria aplicação pede pela URL ao mandar alguém para cá — quem
+ * tentou abrir `/usuarios` sem ser coordenador, ou `/alertas` sem ser
+ * coordenador nem gestor. Esta é a tela para onde o login leva, e por isso a
+ * que recebe quem foi recusado em outra.
  *
  * Mesma regra da tela de login: o valor que vem na query **nunca** é
  * renderizado, só serve de chave neste mapa. Ecoar o parâmetro cru deixaria
@@ -44,6 +45,8 @@ import { usuarioDaSessao } from "@/lib/sessao";
 const AVISOS: Record<string, string> = {
   "usuarios-restrito":
     "A administração de usuários é do papel de coordenador. Se você precisa cadastrar ou desativar alguém, peça a um coordenador.",
+  "alertas-restrito":
+    "O log de alertas de WhatsApp é de coordenador e gestor. Se você precisa saber por que um aviso não chegou, peça a um deles.",
 };
 
 /**
