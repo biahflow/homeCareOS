@@ -1,9 +1,13 @@
-import Link from "next/link";
 import { NavList } from "./NavList";
 
 /**
- * Conteúdo da sidebar: marca, navegação e rodapé. Usado tanto na sidebar fixa
- * de desktop quanto na gaveta mobile — mesma marcação, dois contêineres.
+ * Conteúdo da sidebar: marca e navegação. Usado tanto na sidebar fixa de
+ * desktop quanto na gaveta mobile — mesma marcação, dois contêineres.
+ *
+ * O rodapé que existia aqui ("sem autenticação real nesta versão") saiu porque
+ * deixou de ser verdade, e um aviso falso na tela é pior que nenhum. Sair é
+ * ação de sessão e mora no `Topbar`, visível em qualquer largura — atrás da
+ * gaveta, quem quisesse encerrar o turno teria de abrir um menu antes.
  */
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   return (
@@ -19,15 +23,6 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <NavList onNavigate={onNavigate} />
-
-      <div className="sidebar-bottom">
-        <p className="text-[11px] leading-5 text-muted">
-          Sem autenticação real nesta versão (issue #6).
-        </p>
-        <Link href="/login" className="nav-item px-0 text-brand-600 hover:bg-transparent">
-          Voltar ao login
-        </Link>
-      </div>
     </div>
   );
 }

@@ -1,7 +1,8 @@
 "use client";
 
-import { uploadDocumento, UploadError } from "@homecareos/contracts";
+import { uploadDocumento, ApiError } from "@homecareos/contracts";
 import type { DocumentoCriado, DocumentoStatus } from "@homecareos/contracts";
+import { useRouter } from "next/navigation";
 import { useId, useState } from "react";
 import { API_BASE_URL } from "@/lib/env";
 
@@ -32,6 +33,7 @@ const STATUS_LABEL: Record<DocumentoStatus, string> = {
 };
 
 export default function DocumentosPage() {
+  const router = useRouter();
   const competenciaId = useId();
   const [arquivo, setArquivo] = useState<File | null>(null);
   // Uma chave por arquivo selecionado: reenviar o mesmo arquivo (retentativa)
@@ -60,8 +62,18 @@ export default function DocumentosPage() {
       });
       setEstado({ tipo: "sucesso", documentos: resposta.documentos });
     } catch (erro) {
+      if (erro instanceof ApiError && erro.status === 401) {
+        // A sessão acabou no servidor: ela expirou, foi revogada no logout, ou
+        // um login novo no mesmo navegador tomou o lugar dela
+        // (`sessoes.revogar(token_anterior)`, em `auth/router.py`). A aba antiga
+        // não tem como se recuperar sozinha — em vez de repetir "credencial
+        // inválida" a cada tentativa, ela volta para o login dizendo o que houve.
+        router.replace("/login?motivo=sessao-encerrada");
+        router.refresh();
+        return;
+      }
       const mensagem =
-        erro instanceof UploadError
+        erro instanceof ApiError
           ? erro.message
           : "Falha inesperada ao enviar o documento. Tente novamente.";
       setEstado({ tipo: "erro", mensagem });

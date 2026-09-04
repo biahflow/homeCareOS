@@ -4,8 +4,15 @@ import { X } from "lucide-react";
 import { useState } from "react";
 import { SidebarContent } from "./SidebarContent";
 import { Topbar } from "./Topbar";
+import type { UsuarioDaShell } from "./usuario";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({
+  children,
+  usuario,
+}: {
+  children: React.ReactNode;
+  usuario: UsuarioDaShell;
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -37,7 +44,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       )}
 
       <div className="flex min-h-svh flex-col">
-        <Topbar onOpenMenu={() => setMenuOpen(true)} />
+        <Topbar onOpenMenu={() => setMenuOpen(true)} usuario={usuario} />
         <main className="mx-auto w-full max-w-7xl flex-1 px-5 py-8 lg:px-9 lg:py-10">
           {children}
         </main>
