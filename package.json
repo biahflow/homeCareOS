@@ -1,0 +1,8 @@
+{
+  "name": "homecareos",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "packages/*"
+  ]
+}
