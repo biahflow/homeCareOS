@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ApiError, listarAlertas } from "@homecareos/contracts";
 import type { AlertaItem, RespostaPaginada } from "@homecareos/contracts";
+import { CAMINHO_CANAIS } from "@/components/alertas/canais";
 import {
   LIMITE_POR_PAGINA,
   lerFiltros,
@@ -23,7 +24,7 @@ import { apiUrl, opcoesAutenticadas } from "@/lib/api-servidor";
 import { usuarioDaSessao } from "@/lib/sessao";
 
 /**
- * O log de alertas de WhatsApp: quem foi avisado, do quê, e o que aconteceu.
+ * O log de alertas: quem foi avisado, do quê, por qual canal, e o que aconteceu.
  *
  * Server Component, com o filtro na URL (`searchParams`) — ver a docstring de
  * `components/alertas/filtros.ts`. Duas coisas desta tela são contrato, e não
@@ -112,7 +113,7 @@ export default async function AlertasPage({
         <p className="eyebrow">Operação</p>
         <h1>Alertas</h1>
         <p>
-          O que o sistema avisou no WhatsApp da equipe — documento incompleto, prazo de
+          O que o sistema avisou à equipe — documento incompleto, prazo de
           competência, volume anormal e pendência parada.
         </p>
       </div>
@@ -127,6 +128,20 @@ export default async function AlertasPage({
         (rate limit) fica registrada, porque essa é a anômala. Por isso, não encontrar um alerta
         aqui não prova que ele foi enviado.
       </p>
+
+      {/* O caminho de ida para a outra metade da resposta a "por que não fui
+          avisado": o aviso acima explica a supressão, e um canal desligado ou
+          sem credencial explica o resto. A tela de canais é lida pelos mesmos
+          dois papéis desta, então o link vale para os dois — só o controle de
+          alterar é que é do coordenador, e quem decide isso é a página de lá. */}
+      <div className="flex flex-wrap items-center gap-3">
+        <Link href={CAMINHO_CANAIS} className="btn btn--secondary h-9 min-h-9 px-3 text-xs">
+          Canais de alerta
+        </Link>
+        <span className="text-xs text-muted">
+          Por onde os avisos saem — e se cada canal está mesmo enviando.
+        </span>
+      </div>
 
       <FiltrosAlertas filtros={filtros} />
 

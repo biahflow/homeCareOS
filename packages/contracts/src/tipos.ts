@@ -820,6 +820,15 @@ export interface ListarAlertasParams {
 }
 
 /**
+ * Por onde a mensagem saiu.
+ *
+ * O log deixou de ser só de WhatsApp no ADR 0006, e sem este campo duas linhas
+ * do mesmo aviso para a mesma pessoa seriam indistinguíveis — que é exatamente
+ * o que o segundo canal produz de propósito.
+ */
+export type CanalAlerta = "whatsapp" | "email";
+
+/**
  * Uma linha do log de alertas, como a API a devolve
  * (`alerts/router.py:AlertaItem`).
  *
@@ -839,15 +848,6 @@ export interface ListarAlertasParams {
  * envio) ou `"suprimido"` (por que foi suprimido); em `"enviado"` é sempre
  * `null`.
  */
-/**
- * Por onde a mensagem saiu.
- *
- * O log deixou de ser só de WhatsApp no ADR 0006, e sem este campo duas linhas
- * do mesmo aviso para a mesma pessoa seriam indistinguíveis — que é exatamente
- * o que o segundo canal produz de propósito.
- */
-export type CanalAlerta = "whatsapp" | "email";
-
 export interface AlertaItem {
   id: string;
   tipo: TipoAlerta;
@@ -859,4 +859,117 @@ export interface AlertaItem {
   detalhe: string | null;
   documento_id: string | null;
   created_at: string;
+}
+
+/* Canais de alerta — `/api/alertas/canais` (ADR 0006, parte 2). */
+
+/**
+ * O estado de um canal (`alerts/canais_router.py:CanalOut`).
+ *
+ * **`habilitado` e `disponivel` são duas perguntas diferentes**, e o canal só
+ * envia quando as duas respondem sim:
+ *
+ * ```
+ * canal habilitado (banco)  ×  credencial presente (.env)  =  canal envia
+ * ```
+ *
+ * A API as devolve separadas porque um único booleano "ativo" apagaria a
+ * diferença entre "desliguei" e "esqueci de configurar" — e quem exibir isto
+ * precisa mantê-las separadas na tela, "sob pena de alguém ligar um canal na
+ * interface e não entender por que nada sai" (ADR 0006).
+ *
+ * `disponivel` **não é editável por rota nenhuma**: é derivada do `.env` do
+ * servidor (`UAZAPI_BASE_URL` e `UAZAPI_TOKEN` para o WhatsApp, `SMTP_HOST` e
+ * `SMTP_REMETENTE` para o e-mail) e mudá-la continua sendo deploy. Uma
+ * interface que ofereça controle para ela mente sobre o que consegue fazer.
+ *
+ * `atualizado_em` e `atualizado_por` vêm **nulos juntos** enquanto o estado for
+ * o semeado pela migração de configuração: ninguém ligou nem desligou o canal
+ * ainda. A API deixou nulo de propósito, e quem exibir isso **não pode atribuir
+ * a decisão a "sistema" nem a "automático"** — seria forjar um autor
+ * justamente no campo que existe para responder "quem silenciou a operação?".
+ * Note que `habilitado: true` com `atualizado_por: null` é o estado normal de
+ * um canal semeado ligado: não há ninguém a quem creditar o "ligou".
+ */
+export interface CanalOut {
+  canal: CanalAlerta;
+  /** A decisão de quem opera, lida de `canais_alerta`. */
+  habilitado: boolean;
+  /** Há credencial no `.env` para este canal enviar. Só muda por deploy. */
+  disponivel: boolean;
+  /** ISO 8601, ou `null` para o valor herdado da migração — ver acima. */
+  atualizado_em: string | null;
+  /** E-mail de quem decidiu, ou `"api"` — ver {@link ehAtorMaquina}. */
+  atualizado_por: string | null;
+}
+
+/**
+ * Corpo de `PATCH /api/alertas/canais/{canal}`.
+ *
+ * Um campo só, e é o único que existe: credencial não se edita por API (vive no
+ * `.env`), e o nome do canal é o recurso, não um dado dele.
+ */
+export interface AtualizarCanalParams {
+  habilitado: boolean;
+}
+
+/**
+ * Um evento do histórico de mudanças de canal
+ * (`alerts/canais_router.py:AuditoriaCanalOut`).
+ *
+ * `habilitado_de` e `habilitado_para` são o antes e o depois. A API **não grava
+ * evento quando o valor não mudou**, então hoje os dois são sempre diferentes —
+ * mas quem exibir isto deve derivar "ligou"/"desligou" de `habilitado_para`, e
+ * não da desigualdade entre os dois: é o que continua correto se a regra do
+ * backend mudar.
+ *
+ * `usuario_id` é `null` **e** `usuario` é `"api"` quando quem agiu foi a chave
+ * de integração (`X-API-Key`). Não é lacuna: não há pessoa por trás da chave e a
+ * API não forja uma, mesma decisão de {@link MaquinaOut}. Ver
+ * {@link ehAtorMaquina}.
+ */
+export interface AuditoriaCanalItem {
+  id: string;
+  usuario: string;
+  usuario_id: string | null;
+  canal: CanalAlerta;
+  habilitado_de: boolean;
+  habilitado_para: boolean;
+  created_at: string;
+}
+
+/**
+ * Filtros de `GET /api/alertas/canais/auditoria`.
+ *
+ * `habilitado` filtra pelo estado **para o qual** o canal foi movido: `false`
+ * responde "quem silenciou a operação?", que é a pergunta que este histórico
+ * existe para responder.
+ */
+export interface ListarAuditoriaCanaisParams {
+  canal?: CanalAlerta;
+  /**
+   * Só eventos feitos por este usuário. A chave de integração não tem id e por
+   * isso não é alcançável por este filtro — ver {@link AuditoriaCanalItem}.
+   */
+  ator_id?: string;
+  habilitado?: boolean;
+  /** Itens por página. Padrão 50, máximo 200 (`api/pagination.py`). */
+  limite?: number;
+  offset?: number;
+}
+
+/** `auth/schema.ROTULO_MAQUINA` — o que a API grava quando o ator é a `X-API-Key`. */
+const ROTULO_ATOR_MAQUINA = "api";
+
+/**
+ * Quem fez esta mudança foi a chave de integração, e não uma pessoa?
+ *
+ * O rótulo chega tanto em {@link CanalOut.atualizado_por} quanto em
+ * {@link AuditoriaCanalItem.usuario}, no mesmo campo em que os outros valores
+ * são e-mails. Existe como função, e não como comparação solta em cada tela,
+ * porque a interface **precisa** distingui-lo: renderizá-lo junto dos e-mails
+ * faz o histórico anunciar uma pessoa chamada "api" desligando o canal.
+ */
+export function ehAtorMaquina(ator: string): boolean {
+  return ator === ROTULO_ATOR_MAQUINA;
 }

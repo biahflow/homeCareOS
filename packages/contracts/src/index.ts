@@ -1,10 +1,13 @@
 export type {
   AlertaItem,
+  AtualizarCanalParams,
   AtualizarPendenciaParams,
   AtualizarUsuarioParams,
+  AuditoriaCanalItem,
   BaselineOut,
   BaselineUpsert,
   CanalAlerta,
+  CanalOut,
   ComparacaoGlosa,
   CriarUsuarioParams,
   DocumentoCriado,
@@ -18,6 +21,7 @@ export type {
   FiltrosConferencia,
   LinhaConferencia,
   ListarAlertasParams,
+  ListarAuditoriaCanaisParams,
   ListarDocumentosParams,
   ListarPendenciasParams,
   ListarUsuariosParams,
@@ -59,11 +63,12 @@ export type {
   ValidacaoResumo,
   VolumeDia,
 } from "./tipos";
-export { ehUsuario } from "./tipos";
+export { ehAtorMaquina, ehUsuario } from "./tipos";
 export { ApiError, detalhesDeValidacao } from "./erros";
 export type { ApiErrorPayload } from "./erros";
 export type { OpcoesRequisicao } from "./cliente";
 export {
+  atualizarCanal,
   atualizarPendencia,
   atualizarUsuario,
   caminhoArquivoDocumento,
@@ -73,7 +78,9 @@ export {
   esqueciSenha,
   iniciarMfa,
   listarAlertas,
+  listarAuditoriaCanais,
   listarBaselines,
+  listarCanais,
   listarDocumentos,
   listarOperadoras,
   listarPendencias,
