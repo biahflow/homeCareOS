@@ -82,6 +82,52 @@ export interface MfaVerificarParams {
   codigo: string;
 }
 
+/**
+ * Resposta de `POST /api/auth/mfa/iniciar`: o segredo TOTP recém-gravado.
+ *
+ * **Os dois campos são a credencial**, e `otpauth_uri` carrega o `secret`
+ * dentro dele. Vale para os dois o que vale para uma senha: não vão para
+ * `console.log`, não entram em query string (histórico, log de proxy e header
+ * `Referer` guardariam o segredo), não são persistidos em lugar nenhum do
+ * cliente e não viajam em payload de Server Component. Vivem em memória
+ * enquanto a tela de cadastro está aberta, e acabam com ela.
+ */
+export interface MfaIniciarOut {
+  /** Segredo em base32 — o que se digita à mão em app que não lê QR code. */
+  secret: string;
+  /** O mesmo segredo no formato `otpauth://totp/...`, que vira o QR code. */
+  otpauth_uri: string;
+}
+
+export interface MfaConfirmarParams {
+  /** Os seis dígitos que o app autenticador mostra para o segredo cadastrado. */
+  codigo: string;
+}
+
+/**
+ * Resposta de `POST /api/auth/mfa/confirmar`: os códigos de recuperação em
+ * claro, e **esta é a única vez que eles existem**.
+ *
+ * O banco guarda só o hash Argon2id (`db/models/codigo_recuperacao_mfa.py`) e
+ * não há endpoint que os mostre de novo. Quem consome isto tem uma obrigação
+ * que o tipo não consegue expressar: dar à pessoa a chance de guardá-los antes
+ * de sair da tela, e não persisti-los no cliente para "facilitar depois" —
+ * armazená-los desfaz o motivo de a API só guardar o hash.
+ */
+export interface MfaCodigosRecuperacaoOut {
+  codigos: string[];
+}
+
+export interface MfaDesativarParams {
+  /**
+   * Os **dois** fatores, porque a API exige os dois: com só o código, uma
+   * sessão sequestrada desligaria sozinha o segundo fator; com só a senha,
+   * bastaria a senha vazada — que é a hipótese que faz alguém ativar MFA.
+   */
+  senha: string;
+  codigo: string;
+}
+
 export type LoginResposta = UsuarioOut | MfaPendenteOut;
 export type EuResposta = UsuarioOut | MaquinaOut;
 

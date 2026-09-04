@@ -5,6 +5,10 @@ export type {
   LoginParams,
   LoginResposta,
   MaquinaOut,
+  MfaCodigosRecuperacaoOut,
+  MfaConfirmarParams,
+  MfaDesativarParams,
+  MfaIniciarOut,
   MfaPendenteOut,
   MfaVerificarParams,
   Papel,
@@ -16,4 +20,13 @@ export { ehUsuario } from "./tipos";
 export { ApiError } from "./erros";
 export type { ApiErrorPayload } from "./erros";
 export type { OpcoesRequisicao } from "./cliente";
-export { login, logout, obterUsuarioAtual, uploadDocumento, verificarMfa } from "./cliente";
+export {
+  confirmarMfa,
+  desativarMfa,
+  iniciarMfa,
+  login,
+  logout,
+  obterUsuarioAtual,
+  uploadDocumento,
+  verificarMfa,
+} from "./cliente";

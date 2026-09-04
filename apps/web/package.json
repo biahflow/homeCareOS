@@ -15,6 +15,7 @@
     "@homecareos/contracts": "*",
     "lucide-react": "^1.28.0",
     "next": "16.3.0",
+    "qrcode-generator": "2.0.4",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
