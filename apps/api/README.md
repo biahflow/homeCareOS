@@ -721,6 +721,15 @@ volumétrico chega antes da aplicação e é trabalho da borda (proxy, CDN, WAF)
 que este repositório não descreve. O que este freio contém é abuso de uso
 legítimo: script mal escrito, integração em laço, curiosidade cara.
 
+**`consumos_rate_limit` ainda não tem retenção, e precisa ter.** A tabela cresce
+a cada consumo das quatro rotas limitadas, e entra na política de "Retenção e
+expurgo de dados" (abaixo) como uma quinta entrada — com a ressalva que vale
+para toda tabela lida por um freio: a janela de uma hora deste limite
+(`limites/protecao.JANELA`) é janela de segurança ativa, e um expurgo que apague
+dentro dela **devolve cota a quem acabou de estourar o limite**. É a mesma trava
+que protege `tentativas_login` de ser expurgada dentro da janela do freio de
+login. Até essa ligação existir, ninguém apaga essas linhas.
+
 ## Retenção e expurgo de dados
 
 Três tabelas crescem para sempre e não são só log — `tentativas_login`,
@@ -825,12 +834,6 @@ do container) — mesma decisão de `api-alertas`: em produção quem chama
 - **A tabela de auditoria administrativa não tem retenção aqui.** Ela ainda
   não existia nesta branch quando esta entrega foi feita; quando existir,
   decidir a política de retenção dela é trabalho à parte.
-- **`consumos_rate_limit` também não tem retenção ainda.** A tabela do freio do
-  ADR 0005 ("Rate limit das rotas caras", acima) cresce a cada consumo das
-  quatro rotas limitadas e **precisa entrar nesta política**, com janela mínima
-  respeitando a janela do limite (1 hora, `limites/protecao.JANELA`) — a mesma
-  trava que protege `tentativas_login` de ser expurgada dentro da janela do
-  freio de login. Até então, ninguém apaga essas linhas.
 
 ### Limitações conhecidas
 
