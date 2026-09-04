@@ -1,10 +1,5 @@
-import type {
-  DocumentoStatus,
-  FiltrosConferencia,
-  MetricasParams,
-  Severidade,
-  TipoDocumento,
-} from "@homecareos/contracts";
+import type { DocumentoStatus, FiltrosConferencia, MetricasParams } from "@homecareos/contracts";
+import { STATUS_DE_DOCUMENTO } from "../documentos/vocabulario";
 
 /**
  * Os filtros do relatório vivem na **URL**, não em estado de cliente — o mesmo
@@ -47,58 +42,22 @@ export interface FiltrosDeRelatorio {
   offset: number;
 }
 
-/** Os sete status do documento, na ordem em que o ciclo os percorre. */
-export const STATUS_DE_DOCUMENTO: readonly DocumentoStatus[] = [
-  "processando",
-  "aprovado",
-  "problema",
-  "incompleto",
-  "em_correcao",
-  "resolvido",
-  "liberado",
-];
-
 /**
- * Como cada status é escrito em português.
+ * O vocabulário do documento vem de `components/documentos/vocabulario.ts` —
+ * reexportado aqui, e não redefinido, para que esta tela e a listagem de
+ * documentos não tenham duas listas de status, dois rótulos e duas cores para o
+ * mesmo dado. Os consumidores desta tela continuam importando daqui.
  *
- * É **rótulo**, não severidade: a gravidade de cada status é decisão de produto
- * e vem pronta da API, no campo `severidade` de cada linha
- * (`reports/conferencia.severidade_de`). Traduzir o nome do status não recria
- * essa regra; derivar cor dele recriaria.
+ * `VARIANTE_DE_SEVERIDADE` segue sendo o que esta tela usa: cada linha do
+ * relatório traz a `severidade` que a API decidiu, e é ela — nunca o `status` —
+ * que escolhe a variante do selo.
  */
-export const ROTULO_DE_STATUS_DOCUMENTO: Record<DocumentoStatus, string> = {
-  processando: "Processando",
-  aprovado: "Aprovado",
-  problema: "Problema",
-  incompleto: "Incompleto",
-  em_correcao: "Em correção",
-  resolvido: "Resolvido",
-  liberado: "Liberado",
-};
-
-export const ROTULO_DE_TIPO_DOCUMENTO: Record<TipoDocumento, string> = {
-  evolucao: "Evolução",
-  ficha_visita: "Ficha de visita",
-  boletim: "Boletim",
-  matmed: "MatMed",
-};
-
-/**
- * Variante do selo `.state` por **severidade** — e a severidade quem decide é a
- * API.
- *
- * Este mapa vai de `severidade` (o que a API respondeu) para variante visual, e
- * nunca de `status` para cor. A distinção é o motivo de `Severidade` existir no
- * contrato: "aprovado é verde, incompleto é vermelho" é regra de produto, mora
- * em `reports/conferencia.py` e é testada lá. Um `Record<DocumentoStatus, cor>`
- * aqui seria uma segunda cópia dessa regra, para divergir dela na primeira
- * mudança — e ninguém descobriria, porque as duas continuariam compilando.
- */
-export const VARIANTE_DE_SEVERIDADE: Record<Severidade, string> = {
-  CRITICO: "state--3",
-  ATENCAO: "state--2",
-  OK: "state--1",
-};
+export {
+  ROTULO_DE_STATUS_DOCUMENTO,
+  ROTULO_DE_TIPO_DOCUMENTO,
+  STATUS_DE_DOCUMENTO,
+  VARIANTE_DE_SEVERIDADE,
+} from "../documentos/vocabulario";
 
 type ParametrosDaUrl = Record<string, string | string[] | undefined>;
 

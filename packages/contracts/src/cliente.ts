@@ -3,10 +3,13 @@ import type {
   AtualizarPendenciaParams,
   BaselineOut,
   BaselineUpsert,
+  DocumentoDetalhe,
+  DocumentoListItem,
   EsqueciSenhaParams,
   EuResposta,
   FiltrosConferencia,
   LinhaConferencia,
+  ListarDocumentosParams,
   ListarPendenciasParams,
   LoginParams,
   LoginResposta,
@@ -23,6 +26,7 @@ import type {
   RelatorioConferenciaParams,
   RespostaPaginada,
   ResumoPendencias,
+  RevalidacaoResponse,
   UploadParams,
   UploadResponse,
   UsuarioOut,
@@ -489,6 +493,116 @@ export async function listarOperadoras(
     opcoes,
   );
   return (await response.json()) as Operadora[];
+}
+
+/* Documentos em conferência — `/api/documentos` (issue #6). */
+
+const CAMINHO_DOCUMENTOS = "/api/documentos";
+
+/**
+ * `GET /api/documentos`: a página atual dos documentos em conferência.
+ *
+ * Legível pelos **três** papéis; quem revalida é que é restrito, ver
+ * {@link revalidarDocumento}.
+ *
+ * A API ordena por `created_at` **decrescente** (o mais novo primeiro) e o
+ * cliente não reordena: um documento recém-enviado tem que aparecer no topo da
+ * primeira página, que é onde quem acabou de enviar vai olhar.
+ *
+ * `paginacao.total` é o total **filtrado**. Ele não muda entre páginas do mesmo
+ * filtro, e é ele — não `data.length` — que diz se há próxima página.
+ *
+ * `cache: "no-store"` não é otimização às avessas: a lista é de uma fila de
+ * trabalho compartilhada, e uma resposta que volta do cache mostra a alguém um
+ * documento que outra pessoa já moveu.
+ */
+export async function listarDocumentos(
+  baseUrl: string,
+  params: ListarDocumentosParams = {},
+  opcoes?: OpcoesRequisicao,
+): Promise<RespostaPaginada<DocumentoListItem>> {
+  const response = await requisitar(
+    baseUrl,
+    `${CAMINHO_DOCUMENTOS}${queryString({
+      competencia: params.competencia,
+      status: params.status,
+      operadora_id: params.operadora_id,
+      paciente_id: params.paciente_id,
+      limite: params.limite,
+      offset: params.offset,
+    })}`,
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as RespostaPaginada<DocumentoListItem>;
+}
+
+/**
+ * `GET /api/documentos/{id}`: o documento com a extração e as validações.
+ *
+ * **404 é resposta esperada**, não falha: o id vem da URL, e qualquer endereço
+ * colado pode apontar para um documento que não existe. Quem chama distingue
+ * pelo `status` do {@link ApiError} e mostra a mensagem própria — um erro
+ * genérico faria a pessoa procurar defeito no sistema em vez de no link.
+ *
+ * A resposta carrega prontuário inteiro (`campos_extraidos`): daí o
+ * `cache: "no-store"`, e daí `campos_extraidos` nunca ir para `console.log`
+ * nem para query string.
+ */
+export async function obterDocumento(
+  baseUrl: string,
+  documentoId: string,
+  opcoes?: OpcoesRequisicao,
+): Promise<DocumentoDetalhe> {
+  const response = await requisitar(
+    baseUrl,
+    `${CAMINHO_DOCUMENTOS}/${encodeURIComponent(documentoId)}`,
+    { method: "GET", cache: "no-store" },
+    opcoes,
+  );
+  return (await response.json()) as DocumentoDetalhe;
+}
+
+/**
+ * `POST /api/documentos/{id}/revalidar`: reaplica as regras ativas sobre a
+ * extração **já existente** e reclassifica o documento.
+ *
+ * Não chama o provider de Vision de novo — a extração custa dinheiro e o
+ * documento não mudou; o que mudou foram as regras.
+ *
+ * Três erros que quem trata **precisa** distinguir, porque exigem reações
+ * diferentes:
+ *
+ * - **403** — exige conferente ou coordenador. **A autorização aqui é a da fila
+ *   de pendências, não a dos relatórios**: revalidar é ação de conferência, e o
+ *   gestor lê a operação sem fazê-la (ADR 0001). Esconder o botão para ele é
+ *   ergonomia; a autoridade é esta resposta, e a tela tem que continuar de pé
+ *   quando ela chega (papel alterado no servidor, aba antiga).
+ * - **409** — e não 422: o corpo está correto, é o **estado do documento** que
+ *   impede revalidar agora. São quatro causas, e a API as escreve em `message`:
+ *   documento sem operadora, sem extração, extração ilegível, operadora sem
+ *   regras ativas, ou documento em status terminal. Nenhuma delas se resolve
+ *   tentando de novo, e todas se resolvem em outro lugar do sistema — exibir a
+ *   frase da API é o que diz onde.
+ * - **404** — o documento não existe (id de uma lista velha, endereço colado).
+ *
+ * O sucesso devolve o status **depois** da reclassificação, que pode ser pior
+ * que o anterior. Ele também não é o retrato completo: a revalidação abre e
+ * fecha pendências, e nada disso está aqui — releia o documento em vez de
+ * remendar a tela na mão.
+ */
+export async function revalidarDocumento(
+  baseUrl: string,
+  documentoId: string,
+  opcoes?: OpcoesRequisicao,
+): Promise<RevalidacaoResponse> {
+  const response = await requisitar(
+    baseUrl,
+    `${CAMINHO_DOCUMENTOS}/${encodeURIComponent(documentoId)}/revalidar`,
+    { method: "POST" },
+    opcoes,
+  );
+  return (await response.json()) as RevalidacaoResponse;
 }
 
 /* Relatórios e métricas — `/api/relatorios` (issue #8). */

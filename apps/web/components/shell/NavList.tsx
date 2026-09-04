@@ -16,7 +16,11 @@ export function NavList({ onNavigate }: { onNavigate?: () => void }) {
     <nav aria-label="Navegação principal" className="grid gap-1">
       <p className="nav-label">Operação</p>
       {NAV_ITEMS.map((item) => {
-        const isActive = pathname === item.href;
+        // `startsWith` com a barra, e não igualdade: numa sub-rota como
+        // `/documentos/{id}` o item precisa continuar marcado, senão a
+        // navegação perde a pessoa justamente quando ela desceu um nível. A
+        // barra evita que `/documentos` case com um futuro `/documentosX`.
+        const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
         const Icon = item.icon;
         return (
           <Link
