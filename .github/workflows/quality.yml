@@ -61,3 +61,36 @@ jobs:
 
       - name: pytest
         run: uv run pytest
+
+  # Job independente do `api`: o front não precisa de Postgres nem de Python, e
+  # uma falha de um lado não deve mascarar o outro. Ainda não há framework de
+  # teste no front — os portões aqui são lint, tipos e build.
+  web:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # `apps/web/package.json` exige `>=22.13.0` em `engines`.
+          node-version: "22"
+          cache: npm
+
+      # Na raiz, não em `apps/web`: o lockfile é do workspace inteiro e o app
+      # depende de `packages/contracts`.
+      - name: npm ci
+        run: npm ci
+
+      - name: eslint
+        run: npm run lint -w apps/web
+
+      - name: tsc apps/web
+        run: npx tsc --noEmit -p apps/web/tsconfig.json
+
+      - name: tsc packages/contracts
+        run: npx tsc --noEmit -p packages/contracts/tsconfig.json
+
+      - name: next build
+        run: npm run build -w apps/web

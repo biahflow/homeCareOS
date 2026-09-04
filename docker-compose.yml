@@ -123,6 +123,26 @@ services:
       postgres:
         condition: service_healthy
 
+  # Frontend Next.js. A URL da API é configuração de **runtime do servidor**
+  # (`API_URL`), não argumento de build: com o proxy do ADR 0002 quem chama a
+  # API é o servidor do Next, e o navegador só fala com a origem do próprio
+  # front.
+  #
+  # Por isso `http://api:8000` e não `http://localhost:8001`: a chamada sai de
+  # dentro da rede do Compose, de container para container, então usa o nome do
+  # serviço e a porta **interna** — não depende da porta publicada no host nem
+  # de `API_PORT`.
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "${WEB_PORT:-3001}:3000"
+    depends_on:
+      - api
+
 volumes:
   postgres-data:
   minio-data:

@@ -10,9 +10,13 @@ __pycache__/
 # Ambiente local
 .env
 
-# Node / Next.js (trilha do frontend)
+# Node / Next.js
 node_modules/
 .next/
+# Gerados pelo `next dev`/`next build`, não versionados: a doc do Next diz que
+# `next-env.d.ts` não deve ser rastreado, e ele referencia `.next/types/`.
+next-env.d.ts
+*.tsbuildinfo
 
 # Editores e SO
 .DS_Store
