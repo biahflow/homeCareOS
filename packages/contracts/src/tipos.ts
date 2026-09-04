@@ -839,9 +839,19 @@ export interface ListarAlertasParams {
  * envio) ou `"suprimido"` (por que foi suprimido); em `"enviado"` é sempre
  * `null`.
  */
+/**
+ * Por onde a mensagem saiu.
+ *
+ * O log deixou de ser só de WhatsApp no ADR 0006, e sem este campo duas linhas
+ * do mesmo aviso para a mesma pessoa seriam indistinguíveis — que é exatamente
+ * o que o segundo canal produz de propósito.
+ */
+export type CanalAlerta = "whatsapp" | "email";
+
 export interface AlertaItem {
   id: string;
   tipo: TipoAlerta;
+  canal: CanalAlerta;
   chave: string;
   destinatario: string;
   mensagem: string;

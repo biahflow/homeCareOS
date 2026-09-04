@@ -4,6 +4,7 @@ export type {
   AtualizarUsuarioParams,
   BaselineOut,
   BaselineUpsert,
+  CanalAlerta,
   ComparacaoGlosa,
   CriarUsuarioParams,
   DocumentoCriado,

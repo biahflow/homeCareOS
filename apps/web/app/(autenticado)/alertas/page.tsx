@@ -5,6 +5,7 @@ import type { AlertaItem, RespostaPaginada } from "@homecareos/contracts";
 import {
   LIMITE_POR_PAGINA,
   lerFiltros,
+  rotuloDoCanal,
   rotuloDoStatus,
   rotuloDoTipo,
   temFiltro,
@@ -185,7 +186,11 @@ export default async function AlertasPage({
                 </div>
 
                 <p className="m-0 text-xs text-muted">
-                  Destinatário: <span className="text-ink">{alerta.destinatario}</span>
+                  {/* Por onde saiu, e não só para quem: desde o ADR 0006 a mesma
+                      pessoa pode receber o mesmo aviso por dois canais, e sem
+                      isto as duas linhas ficariam indistinguíveis na tela. */}
+                  {rotuloDoCanal(alerta.canal)} para{" "}
+                  <span className="text-ink">{alerta.destinatario}</span>
                 </p>
 
                 <p className="m-0 text-sm text-ink">{alerta.mensagem}</p>
