@@ -1,7 +1,9 @@
 """Registro de auditoria administrativa de usuários (issue #30, fecha o ADR 0004).
 
-Três funções, cada uma resolvendo uma parte do requisito duro do handoff — o
-registro precisa entrar na **mesma transação** da mutação que o originou:
+Três funções de escrita, cada uma resolvendo uma parte do requisito duro do
+handoff — o registro precisa entrar na **mesma transação** da mutação que o
+originou —, e uma quarta que apaga por idade (`limpar_auditoria_antiga`, o
+expurgo por retenção da issue #39):
 
 - `calcular_mudancas` compara o estado atual do `Usuario` com o corpo do
   `PATCH` e devolve só os campos que **de fato** mudaram de valor. Um `PATCH`
@@ -16,13 +18,22 @@ registro precisa entrar na **mesma transação** da mutação que o originou:
   commit aqui reproduziria a armadilha de
   `intake.repository.DocumentoRepository.registrar_log` — o registro sairia da
   transação da mutação sem o código parecer errado.
+- `limpar_auditoria_antiga` apaga por idade, em lotes, para o expurgo por
+  retenção (`retencao/cli.py`). Fica aqui, junto do domínio, pela mesma regra
+  de `auth.protecao.limpar_tentativas_antigas` e
+  `alerts.repository.limpar_alertas_antigos`: `retencao/` decide QUANDO é
+  seguro apagar, cada domínio sabe COMO apagar o que é seu. É o **único**
+  caminho de exclusão desta tabela — a API continua append-only, sem `DELETE`.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from datetime import datetime
+from typing import Any, cast
 
+from sqlalchemy import delete, func, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session as DbSession
 
 from homecareos.auth.schema import AcaoAuditoriaUsuario, UsuarioAtualizarRequest
@@ -89,3 +100,43 @@ def registrar(
             mudancas=mudancas,
         )
     )
+
+
+def limpar_auditoria_antiga(
+    session: DbSession, *, antes_de: datetime, lote: int = 1000, dry_run: bool = False
+) -> int:
+    """Apaga eventos de auditoria com `created_at < antes_de` e devolve quantos
+    saíram (ou sairiam, em `dry_run`). Commita a cada lote de até `lote`
+    linhas — ver `auth/protecao.limpar_tentativas_antigas` para o motivo do
+    lote/commit por lote e do default de `lote`. Ver `retencao/cli.py`
+    (issue #39).
+
+    Sem exceção por linha, ao contrário de
+    `auth.recuperacao.limpar_tokens_antigos`: aqui não existe evento "ainda em
+    uso" que a idade não capture — a tabela é append-only e ninguém segura
+    referência a uma linha dela. A proteção desta tabela é o piso de retenção
+    (`retencao/janelas.MINIMO_AUDITORIA_USUARIOS`), não uma cláusula no
+    `WHERE`.
+
+    `alvo_email` é dado pessoal (ver a docstring de
+    `db/models/auditoria_usuario.py`): esta é a única coisa no sistema que o
+    remove de lá.
+    """
+    condicao = AuditoriaUsuario.created_at < antes_de
+    if dry_run:
+        total = session.scalar(select(func.count()).select_from(AuditoriaUsuario).where(condicao))
+        return int(total or 0)
+
+    total = 0
+    while True:
+        subquery = select(AuditoriaUsuario.id).where(condicao).limit(lote)
+        resultado = cast(
+            "CursorResult[Any]",
+            session.execute(delete(AuditoriaUsuario).where(AuditoriaUsuario.id.in_(subquery))),
+        )
+        session.commit()
+        apagadas = resultado.rowcount
+        total += apagadas
+        if apagadas < lote:
+            break
+    return total

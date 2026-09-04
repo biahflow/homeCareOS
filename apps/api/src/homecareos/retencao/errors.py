@@ -8,8 +8,9 @@ class RetencaoError(Exception):
 
 
 class RetencaoInvalidaError(RetencaoError):
-    """A retenção configurada é menor que o piso mínimo de alguma janela de
-    segurança ativa da tabela — ver `retencao/janelas.py`.
+    """A retenção configurada é menor que o piso mínimo da tabela — a janela de
+    um freio de segurança ativo, ou o valor de auditoria que a tabela existe
+    para preservar. Ver `retencao/janelas.py`.
 
     Erro de configuração, não falha transitória: quem chama precisa corrigir
     a retenção antes de rodar de novo. Nada é apagado quando esta exceção é

@@ -573,11 +573,14 @@ já está no banco) não grava evento — nada mudou. Nenhuma resposta e nenhuma
 linha desta tabela carregam `senha_hash`, `mfa_secret`, `mfa_ultimo_passo` ou
 token algum.
 
-**Sem política de retenção.** A tabela cresce a cada operação administrativa e
-não há expurgo nesta entrega. Não é descuido: por quanto tempo guardar auditoria
-que tem e-mail dentro é decisão de negócio e de LGPD, não de engenharia — e uma
-retenção escolhida no chute apagaria justamente a linha que uma investigação
-procura. Registrado nas limitações conhecidas, abaixo.
+**Retenção: 5 anos, com piso de 1 ano.** A tabela cresce a cada operação
+administrativa e é expurgada por idade junto com as outras três
+(`RETENCAO_AUDITORIA_USUARIOS_DIAS`, ver "Retenção e expurgo de dados"
+abaixo) — os dois números são assunção deste time, não requisito confirmado
+pelo cliente ou pelo jurídico. O piso não protege freio nenhum: ele existe
+porque uma auditoria administrativa curta demais deixa de responder à pergunta
+que a justifica, que aparece em investigação — quase nunca no mesmo trimestre
+do evento.
 
 #### Limitações honestas
 
@@ -615,13 +618,15 @@ o caminho do usuário recusa.
 
 ## Retenção e expurgo de dados
 
-Três tabelas crescem para sempre e não são só log — `tentativas_login`,
-`tokens_recuperacao` e `alertas_enviados` são consultadas por freios de
-segurança ativos, dentro de janelas de tempo (issue #39). `alertas_enviados`
-tem ainda um motivo de privacidade: `mensagem` guarda o texto exatamente como
-foi enviado, **incluindo o nome do paciente** (ver `db/models/alerta.py`) —
-dado pessoal de saúde retido para sempre não é neutro, é exposição que só
-cresce.
+Quatro tabelas crescem para sempre e nenhuma delas é só log.
+`tentativas_login`, `tokens_recuperacao` e `alertas_enviados` são consultadas
+por freios de segurança ativos, dentro de janelas de tempo (issue #39).
+`alertas_enviados` tem ainda um motivo de privacidade: `mensagem` guarda o
+texto exatamente como foi enviado, **incluindo o nome do paciente** (ver
+`db/models/alerta.py`) — dado pessoal de saúde retido para sempre não é
+neutro, é exposição que só cresce. `auditoria_usuarios` entrou depois (issue
+#30) e é o caso diferente: **ninguém a lê como freio**, só
+`GET /api/usuarios/auditoria`.
 
 | tabela | quem consulta | janela de segurança | o que quebra se você apagar dentro dela |
 | --- | --- | --- | --- |
@@ -629,6 +634,7 @@ cresce.
 | `tokens_recuperacao` | teto de emissão (`auth/recuperacao.emissoes_recentes`) | `JANELA_DO_TETO`, 1h, **hardcoded** em `auth/recuperacao.py` | o teto de `SENHA_RESET_MAX_POR_HORA` afrouxa |
 | `alertas_enviados` | cooldown (`alerts/repository.existe_envio_recente`) | `ALERTAS_COOLDOWN_HORAS` (24h por padrão) | o mesmo alerta dispara de novo |
 | `alertas_enviados` | rate limit (`alerts/repository.contar_envios_desde`) | `JANELA_RATE_LIMIT`, 1h, **hardcoded** em `alerts/service.py` | o teto por destinatário afrouxa |
+| `auditoria_usuarios` | ninguém, como freio — só a leitura de `GET /api/usuarios/auditoria` | nenhuma | nada trava; a tabela é que deixa de responder à pergunta que a justifica |
 
 Por isso o expurgo **recusa-se a rodar** quando a retenção configurada for
 menor que **o dobro** da janela de segurança ativa de uma tabela — a janela é
@@ -637,6 +643,19 @@ contra o relógio (job atrasado, retenção configurada minutos acima do
 limite). O erro diz qual janela foi violada e qual o mínimo aceitável, e
 nada é apagado (nem nas outras tabelas da mesma execução).
 
+**`auditoria_usuarios` tem piso pela outra razão, e por isso sem a margem de
+2x.** Nenhum freio a consulta, então uma lista de janelas vazia deixaria
+passar qualquer retenção, inclusive um dia — e uma auditoria administrativa de
+um dia não responde a "quem deu a esta pessoa o papel de coordenador, e
+quando?", porque essa pergunta aparece em investigação, raramente no mesmo
+trimestre do evento. O piso dela é um **mínimo declarado** de 1 ano
+(`MINIMO_AUDITORIA_USUARIOS`, em `retencao/janelas.py`), aplicado literal: a
+margem de 2x compra folga contra o relógio de um consumidor real, e aqui não
+há relógio a perder — dobrar o mínimo em silêncio seria inventar política. A
+mensagem da recusa também é outra: ela fala do propósito da tabela, não de um
+freio que não existe. Esse piso **não é configuração** de propósito — um piso
+que quem configura a retenção pode baixar junto com ela não é piso.
+
 ### Configuração
 
 | variável | default | por quê |
@@ -644,11 +663,21 @@ nada é apagado (nem nas outras tabelas da mesma execução).
 | `RETENCAO_TENTATIVAS_LOGIN_DIAS` | 180 | registro de acesso à aplicação; 6 meses é o horizonte que o Marco Civil da Internet (Lei 12.965/2014, art. 15) estabelece para provedor de aplicações com fins econômicos |
 | `RETENCAO_TOKENS_RECUPERACAO_DIAS` | 30 | o valor de auditoria é curto; o token em si já morre em `SENHA_RESET_VALIDADE_MINUTOS` (30 min) |
 | `RETENCAO_ALERTAS_ENVIADOS_DIAS` | 90 | `mensagem` contém nome de paciente — reter menos é a decisão mais segura, desde que fique muito acima do cooldown de 24h |
+| `RETENCAO_AUDITORIA_USUARIOS_DIAS` | 1825 (5 anos) | auditoria de quem deu acesso a prontuário se consulta anos depois, em investigação ou auditoria externa; é prova de quem autorizou o quê, não log operacional como os 90 dias de `alertas_enviados`. Piso de 365 dias (1 ano), abaixo do qual o expurgo recusa rodar |
 | `RETENCAO_TAMANHO_LOTE` | 1000 | tamanho do lote de apagar, com commit por lote |
 
-**Os três defaults de dias são uma assunção deste time, não um requisito
-confirmado pelo cliente ou pelo jurídico** — precisam de confirmação antes de
-valer como política real de retenção.
+**Os quatro defaults de dias — e o piso de 1 ano da auditoria — são uma
+assunção deste time, não um requisito confirmado pelo cliente ou pelo
+jurídico** — precisam de confirmação antes de valer como política real de
+retenção.
+
+Nos 5 anos da auditoria há uma tensão que esta entrega **declara e não
+resolve**: `auditoria_usuarios.alvo_email` é dado pessoal, e cinco anos é
+bastante tempo para guardá-lo. A favor de reter: auditoria de acesso a dado de
+saúde é justamente o caso em que a retenção longa se defende, e é o registro
+que uma investigação procura. Contra: minimização — guardar o mínimo
+necessário, pelo menor tempo necessário. Escolher entre os dois é decisão de
+negócio e de jurídico, não de engenharia.
 
 ### Um token ainda válido nunca é apagado por idade
 
@@ -707,16 +736,14 @@ do container) — mesma decisão de `api-alertas`: em produção quem chama
 
 ### Follow-ups conhecidos
 
-- **Sem índice líder em `created_at`.** Nenhuma das três tabelas tem
-  `created_at` como coluna líder de índice, então o `DELETE` por data tende a
-  seq scan. Não foi criado índice nesta entrega — indexar antes de medir é
-  otimização prematura para um job de manutenção fora do caminho de request, e
-  todo índice novo custa escrita numa tabela que recebe insert a cada login.
-  Se o expurgo diário demorar demais em regime, medir e considerar índice em
-  `created_at`.
-- **A tabela de auditoria administrativa não tem retenção aqui.** Ela ainda
-  não existia nesta branch quando esta entrega foi feita; quando existir,
-  decidir a política de retenção dela é trabalho à parte.
+- **Sem índice líder em `created_at`** nas três primeiras tabelas, então o
+  `DELETE` por data tende a seq scan nelas. Não foi criado índice — indexar
+  antes de medir é otimização prematura para um job de manutenção fora do
+  caminho de request, e todo índice novo custa escrita numa tabela que recebe
+  insert a cada login. Se o expurgo diário demorar demais em regime, medir e
+  considerar índice em `created_at`. `auditoria_usuarios` é a exceção: já tem
+  `ix_auditoria_usuarios_created_at`, criado para a listagem paginada (mais
+  recente primeiro), e o expurgo dela pega carona nele.
 
 ### Limitações conhecidas
 
@@ -733,9 +760,6 @@ que a ausência:
 - **sem política que obrigue MFA**: o segundo fator existe desde a issue #35
   (ver "Segundo fator (MFA por TOTP)" acima), mas ativar é decisão de cada
   pessoa — não há configuração que o exija por papel ou para a operação inteira;
-- **sem retenção da auditoria administrativa**: `auditoria_usuarios` (issue #30,
-  ver "Auditoria administrativa" acima) não tem expurgo nem política de
-  retenção nesta entrega — cresce indefinidamente até essa decisão existir;
 - **sem criação de `gestor` pela API**: ele continua sendo criado por
   `python -m homecareos.auth.cli criar`, que exige acesso ao servidor. Não é
   lacuna: `gestor` é outro eixo da matriz, e deixá-lo atribuível por quem

@@ -159,8 +159,10 @@ class Settings(BaseSettings):
     # `tokens_recuperacao` e `alertas_enviados` crescem sem limite e não são só
     # log: as três são consultadas por freios de segurança ativos dentro de
     # janelas de tempo — ver `retencao/janelas.py` e a seção "Retenção e
-    # expurgo de dados" do README. Os três defaults de dias abaixo são
-    # ASSUNÇÃO deste time, não requisito confirmado pelo cliente/jurídico.
+    # expurgo de dados" do README. `auditoria_usuarios` entrou depois e por
+    # outra razão: não tem freio lendo, tem propósito a preservar. Os quatro
+    # defaults de dias abaixo são ASSUNÇÃO deste time, não requisito
+    # confirmado pelo cliente/jurídico.
     #
     # Registro de acesso à aplicação; 180 dias (~6 meses) é o horizonte que o
     # Marco Civil da Internet (Lei 12.965/2014, art. 15) estabelece para
@@ -174,6 +176,17 @@ class Settings(BaseSettings):
     # `db/models/alerta.py`) — aqui a LGPD empurra para reter MENOS, desde que
     # fique muito acima do cooldown de 24h (`alertas_cooldown_horas`).
     retencao_alertas_enviados_dias: int = 90
+    # 1825 dias (5 anos): auditoria de quem deu acesso a prontuário é o tipo de
+    # registro que se consulta anos depois, em investigação ou auditoria
+    # externa — não é log operacional como `alertas_enviados` (90 dias), é
+    # prova de quem autorizou o quê. O contrapeso é real e fica declarado, não
+    # resolvido: `auditoria_usuarios.alvo_email` é dado pessoal, e cinco anos é
+    # bastante tempo para guardá-lo — a favor pesa que auditoria de acesso a
+    # dado de saúde é justamente o caso em que reter se defende; contra, a
+    # minimização. Escolher entre os dois é decisão de negócio/jurídico.
+    # O piso de um ano NÃO é configurável aqui de propósito — ver
+    # `retencao/janelas.MINIMO_AUDITORIA_USUARIOS`.
+    retencao_auditoria_usuarios_dias: int = 1825
     # Tamanho do lote de apagar por vez, com commit a cada lote (ver
     # `auth/protecao.limpar_tentativas_antigas`). 1000: grande o bastante para
     # não multiplicar round-trips numa tabela com anos de atraso acumulado,
