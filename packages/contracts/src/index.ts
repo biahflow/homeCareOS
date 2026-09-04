@@ -1,6 +1,7 @@
 export type {
   DocumentoCriado,
   DocumentoStatus,
+  EsqueciSenhaParams,
   EuResposta,
   LoginParams,
   LoginResposta,
@@ -12,6 +13,7 @@ export type {
   MfaPendenteOut,
   MfaVerificarParams,
   Papel,
+  RedefinirSenhaParams,
   UploadParams,
   UploadResponse,
   UsuarioOut,
@@ -23,10 +25,12 @@ export type { OpcoesRequisicao } from "./cliente";
 export {
   confirmarMfa,
   desativarMfa,
+  esqueciSenha,
   iniciarMfa,
   login,
   logout,
   obterUsuarioAtual,
+  redefinirSenha,
   uploadDocumento,
   verificarMfa,
 } from "./cliente";

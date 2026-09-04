@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useState } from "react";
 import { ApiError, ehUsuario, login } from "@homecareos/contracts";
@@ -129,6 +130,10 @@ export function FormularioLogin({ aviso }: { aviso?: string }) {
             {erro}
           </p>
         )}
+
+        <Link href="/esqueci-senha" className="btn btn--ghost">
+          Esqueci minha senha
+        </Link>
       </form>
     </>
   );

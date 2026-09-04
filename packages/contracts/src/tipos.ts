@@ -73,6 +73,18 @@ export interface LoginParams {
   senha: string;
 }
 
+/* Recuperação de senha (issue #34) — `/api/auth/senha/*`. */
+
+export interface EsqueciSenhaParams {
+  email: string;
+}
+
+export interface RedefinirSenhaParams {
+  /** Token de uso único recebido por e-mail. Não confundir com o cookie de sessão. */
+  token: string;
+  nova_senha: string;
+}
+
 export interface MfaVerificarParams {
   /**
    * Os seis dígitos do app autenticador **ou** um código de recuperação
