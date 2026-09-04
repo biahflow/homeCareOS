@@ -830,9 +830,7 @@ do container) — mesma decisão de `api-alertas`: em produção quem chama
   quatro rotas limitadas e **precisa entrar nesta política**, com janela mínima
   respeitando a janela do limite (1 hora, `limites/protecao.JANELA`) — a mesma
   trava que protege `tentativas_login` de ser expurgada dentro da janela do
-  freio de login. A ligação não foi feita nesta entrega porque
-  `homecareos.retencao` estava sendo reescrito em paralelo; até ela existir,
-  ninguém apaga essas linhas.
+  freio de login. Até então, ninguém apaga essas linhas.
 
 ### Limitações conhecidas
 
