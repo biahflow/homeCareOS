@@ -7,9 +7,10 @@ Desde a issue #30 a regra deste router é `exigir_papel(coordenador, gestor)`:
 disparar varredura e ler quem foi notificado é acompanhamento da operação, não
 execução dela. A chave de API continua passando, como em todo o resto.
 
-O provider vem de uma dependency (`obter_provider`) em vez de ser construído
-dentro do handler: é o que permite ao teste de integração injetar um dublê em
-memória e exercitar a política anti-bombardeio sem tocar em rede.
+Os canais vêm de uma dependency (`obter_canais`) em vez de serem construídos
+dentro do handler: é o que permite ao teste de integração injetar dublês em
+memória e exercitar a política anti-bombardeio sem tocar em rede nem em caixa
+postal.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from homecareos.alerts import repository
+from homecareos.alerts.canais import CanalAlerta, construir_canais
 from homecareos.alerts.errors import AlertConfigError
-from homecareos.alerts.provider import WhatsAppProvider, get_provider
 from homecareos.alerts.schema import ResumoVarredura, StatusAlerta, TipoAlerta
 from homecareos.alerts.service import executar_varredura
 from homecareos.api.pagination import (
@@ -41,11 +42,36 @@ from homecareos.limites.schema import Recurso
 router = APIRouter(prefix="/api/alertas", tags=["alertas"])
 
 
-def obter_provider(
+def _erro_de_configuracao(exc: AlertConfigError) -> HTTPException:
+    """422 com a mensagem inteira: é erro de configuração de quem opera, e a
+    mensagem tem que dizer o que consertar. Sem ela, a pessoa recebe "erro de
+    configuração" e volta a caçar o typo no `.env` no escuro.
+
+    Existe como função porque a configuração é lida em **dois** momentos da
+    mesma requisição — na dependency, para montar os canais, e dentro da
+    varredura, para os destinatários e templates —, e um typo tem de virar o
+    mesmo 422 nos dois. Enquanto isto era só o corpo do handler, um
+    `ALERTAS_CANAIS` inválido escapava pela dependency e virava 500.
+    """
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
+def obter_canais(
     settings: Annotated[Settings, Depends(get_settings)],
-) -> WhatsAppProvider | None:
-    """Gateway de WhatsApp da requisição; `None` quando não há gateway configurado."""
-    return get_provider(settings)
+) -> list[CanalAlerta]:
+    """Os canais desta requisição, cada um sabendo se está ligado e se tem credencial.
+
+    Devolve **todos** os canais implementados, não só os que enviam: o resumo
+    da varredura precisa distinguir "desliguei este canal" de "liguei e esqueci
+    a credencial" (ADR 0006).
+    """
+    try:
+        return construir_canais(settings)
+    except AlertConfigError as exc:
+        # Dependency roda ANTES do corpo do handler: sem este `except`, o
+        # `try` de `varredura` nunca veria o erro e um `ALERTAS_CANAIS` com
+        # typo viraria 500 em vez do 422 que diz o que consertar.
+        raise _erro_de_configuracao(exc) from exc
 
 
 class AlertaItem(BaseModel):
@@ -59,6 +85,11 @@ class AlertaItem(BaseModel):
 
     id: uuid.UUID
     tipo: str
+    canal: str
+    """Por onde a mensagem saiu (`whatsapp`/`email`). Sem ele, duas linhas do
+    mesmo aviso para a mesma pessoa seriam indistinguíveis no log — e é
+    justamente isso que o segundo canal produz de propósito (ADR 0006)."""
+
     chave: str
     destinatario: str
     mensagem: str
@@ -80,7 +111,7 @@ class AlertaItem(BaseModel):
         "`python -m homecareos.alerts.scan` do cron faz."
     ),
     # Rate limit por identidade (ADR 0005): a varredura dispara os detectores e
-    # fala com o gateway de WhatsApp, enviando mensagem de verdade. O cron de
+    # fala com os gateways dos canais ligados, enviando mensagem de verdade. O cron de
     # produção NÃO passa por aqui — ele chama `python -m homecareos.alerts.scan`,
     # o módulo, que não faz requisição nenhuma —, mas a chave de máquina ganha
     # limite folgado mesmo assim: nada garante que alguém não tenha apontado um
@@ -91,17 +122,12 @@ class AlertaItem(BaseModel):
 def varredura(
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-    provider: Annotated[WhatsAppProvider | None, Depends(obter_provider)],
+    canais: Annotated[list[CanalAlerta], Depends(obter_canais)],
 ) -> ResumoVarredura:
     try:
-        return executar_varredura(session, settings, provider)
+        return executar_varredura(session, settings, canais)
     except AlertConfigError as exc:
-        # 422 com a mensagem inteira: é erro de configuração de quem opera, e a
-        # mensagem tem que dizer o que consertar. Sem ela, a pessoa recebe "erro
-        # de configuração" e volta a caçar o typo no `.env` no escuro.
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        raise _erro_de_configuracao(exc) from exc
 
 
 @router.get(

@@ -8,15 +8,17 @@ está sendo avisado", que é a única situação em que alguém precisa acordar.
 
 Falha de gateway **não** sai com `1`: ela já está registrada como linha `falha`
 em `alertas_enviados`, e uma varredura em que um destinatário falhou e outros
-três foram avisados não é uma execução fracassada.
+três foram avisados não é uma execução fracassada. Canal desligado ou sem
+credencial também não: os dois estados saem no JSON, canal a canal, em
+`canais` (ADR 0006).
 """
 
 from __future__ import annotations
 
 import sys
 
+from homecareos.alerts.canais import construir_canais
 from homecareos.alerts.errors import AlertConfigError
-from homecareos.alerts.provider import get_provider
 from homecareos.alerts.service import executar_varredura
 from homecareos.config import get_settings
 from homecareos.db.session import get_sessionmaker
@@ -24,10 +26,14 @@ from homecareos.db.session import get_sessionmaker
 
 def main() -> int:
     settings = get_settings()
-    provider = get_provider(settings)
     try:
+        # DENTRO do `try`: `construir_canais` lê `ALERTAS_CANAIS` e levanta
+        # `AlertConfigError` num canal desconhecido. Fora daqui, um typo na
+        # variável viraria traceback e código de saída 1 sem a mensagem que
+        # diz o que consertar — que é justamente o que o cron monitora.
+        canais = construir_canais(settings)
         with get_sessionmaker()() as session:
-            resumo = executar_varredura(session, settings, provider)
+            resumo = executar_varredura(session, settings, canais)
     except AlertConfigError as exc:
         print(f"configuração de alertas inválida: {exc}", file=sys.stderr)
         return 1

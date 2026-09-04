@@ -9,8 +9,8 @@ from __future__ import annotations
 import logging
 import uuid
 
+from homecareos.alerts.canais import canais_que_enviam, construir_canais
 from homecareos.alerts.detectores import detectar_documento_incompleto_critico
-from homecareos.alerts.provider import get_provider
 from homecareos.alerts.service import despachar
 from homecareos.config import get_settings
 from homecareos.db.session import get_sessionmaker
@@ -23,15 +23,15 @@ def notificar_classificacao(documento_id: uuid.UUID) -> None:
 
     Best-effort e blindado: **esta função NUNCA levanta.** Notificação não pode
     derrubar ingestão de documento — o produto do sistema é a conferência, e o
-    WhatsApp é um acessório dela. Gateway fora do ar, token vencido, JSON de
-    destinatário malformado: tudo vira `logger.exception` e a classificação
-    segue commitada como se o alerta não existisse.
+    aviso é um acessório dela. Gateway fora do ar, token vencido, SMTP
+    recusando, JSON de destinatário malformado: tudo vira `logger.exception` e
+    a classificação segue commitada como se o alerta não existisse.
 
     Três decisões que valem registro:
 
-    - Sai **antes de abrir sessão** quando o gancho está desligado ou o gateway
-      não está configurado. Abrir conexão para descobrir que não há o que fazer
-      é custo no caminho do upload.
+    - Sai **antes de abrir sessão** quando o gancho está desligado ou **nenhum
+      canal** está ligado com credencial. Abrir conexão para descobrir que não
+      há o que fazer é custo no caminho do upload.
     - Abre a **própria** sessão, nunca a do chamador. A transação da
       classificação já commitou e é dele; um erro de escrita do log de alerta
       não pode desfazer uma classificação que deu certo.
@@ -46,8 +46,8 @@ def notificar_classificacao(documento_id: uuid.UUID) -> None:
         if not settings.alertas_hook_inline_habilitado:
             return
 
-        provider = get_provider(settings)
-        if provider is None:
+        canais = construir_canais(settings)
+        if not canais_que_enviam(canais):
             return
 
         with get_sessionmaker()() as session:
@@ -56,7 +56,7 @@ def notificar_classificacao(documento_id: uuid.UUID) -> None:
             )
             if not alertas:
                 return
-            despachar(session, settings, provider, alertas)
+            despachar(session, settings, canais, alertas)
     except Exception:
         logger.exception(
             "gancho de alerta falhou para o documento %s; a classificação não é afetada",

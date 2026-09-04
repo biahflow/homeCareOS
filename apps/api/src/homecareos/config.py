@@ -133,14 +133,47 @@ class Settings(BaseSettings):
     uazapi_token: str = ""
     alertas_timeout_segundos: float = 10.0
 
+    # Canais de alerta ligados, separados por vírgula (`whatsapp`, `email`).
+    # ADR 0006: liga/desliga é uma pergunta, credencial é outra, e as duas
+    # precisam de resposta afirmativa para um canal enviar. O default preserva
+    # o comportamento anterior ao ADR (só WhatsApp) — ligar e-mail por padrão
+    # seria mandar mensagem que ninguém pediu. Vazio desliga tudo.
+    #
+    # ASSUNÇÃO/TRANSIÇÃO: o ADR 0006 decide que esta fonte vira uma tabela de
+    # canais editável pelo coordenador, com a mudança auditada. Até lá o
+    # liga/desliga é ambiente, e quem o muda precisa de acesso ao servidor.
+    alertas_canais: str = "whatsapp"
+
     # Destinatários por tipo de alerta, JSON:
     #   {"documento_incompleto_critico": ["5521999999999"], ...}
+    # Só o canal de WhatsApp usa esta lista: são telefones, e não há telefone
+    # em `usuarios` para resolver destinatário por papel (ADR 0006).
     alertas_destinatarios: str = ""
+
+    # Quais papéis recebem cada tipo por E-MAIL, JSON:
+    #   {"volume_anormal": ["coordenador", "gestor"], ...}
+    # Sobrescrita PARCIAL do default declarado em
+    # `alerts/config.PAPEIS_EMAIL_PADRAO` — tipo ausente daqui usa o default,
+    # lista vazia desliga o tipo neste canal.
+    #
+    # O default é ASSUNÇÃO deste time, não requisito confirmado pelo cliente:
+    # o ADR 0006 deixa "quais papéis recebem qual tipo" em aberto, como
+    # calibragem de produto. Ele manda os três alertas de item individual
+    # (documento crítico, prazo de competência, pendência parada) ao
+    # coordenador, e inclui o gestor só em `volume_anormal`, que é o único
+    # sinal agregado dos quatro — leitura da operação, que é o que o gestor
+    # faz (matriz do ADR 0001).
+    alertas_papeis_email: str = ""
     # Sobrescrita opcional dos templates, JSON: {"<tipo>": "<template>"}.
     alertas_templates: str = ""
 
-    # Anti-bombardeio: teto por destinatário por hora e intervalo mínimo entre
-    # dois alertas sobre o MESMO assunto (ver `alerts/service.py`).
+    # Anti-bombardeio: teto por PESSOA por hora e intervalo mínimo entre dois
+    # alertas sobre o MESMO assunto para o mesmo endereço (ver
+    # `alerts/service.py`). O nome da variável ficou de quando havia um canal
+    # só e endereço era sinônimo de pessoa; desde o ADR 0006 a contagem é por
+    # `usuarios.id` quando o sistema sabe de quem é o endereço, e cai para o
+    # endereço quando não sabe (telefone avulso desta configuração). Renomear a
+    # variável quebraria `.env` de produção sem ganho de comportamento.
     alertas_max_por_hora_por_destinatario: int = 10
     alertas_cooldown_horas: int = 24
 

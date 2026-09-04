@@ -133,6 +133,9 @@ def destinatario_alerta() -> Iterator[str]:
 def _alerta(*, destinatario: str, created_at: datetime, status: str = "enviado") -> AlertaEnviado:
     return AlertaEnviado(
         tipo="documento_incompleto_critico",
+        # `canal` passou a ser obrigatório com o ADR 0006. O expurgo não olha
+        # para ele — a janela é `created_at` —, mas a linha precisa ser válida.
+        canal="whatsapp",
         chave=f"retencao-teste:{uuid.uuid4()}",
         destinatario=destinatario,
         mensagem="mensagem de teste do expurgo por retenção",
