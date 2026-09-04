@@ -721,11 +721,13 @@ def confirmar_mfa(
     description=(
         "Exige os **dois** fatores no corpo: senha e código. Limpa o segredo, "
         "a flag, o passo e os códigos de recuperação. Senha ou código errado: "
-        "422 com a mesma mensagem. MFA não ativado: 409."
+        "422 com a mesma mensagem, e a tentativa conta para o bloqueio por "
+        "força bruta. MFA não ativado: 409."
     ),
 )
 def desativar_mfa(
     corpo: MfaDesativarRequest,
+    request: Request,
     principal: Annotated[Principal, Depends(principal_atual)],
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -741,6 +743,26 @@ def desativar_mfa(
     diriam a quem está com a sessão de outra pessoa qual metade da credencial
     ele já tem.
 
+    **O freio da issue #33 vale aqui**, e a ausência dele era um buraco: exigir
+    senha e código não adianta se o código pode ser tentado um milhão de vezes.
+    Seis dígitos são 10⁶ possibilidades, e sem limite quem tivesse a senha
+    chegava ao segundo fator por força bruta — sem 429, sem atraso e sem deixar
+    linha em `tentativas_login`. Isso fazia desta rota um alvo mais barato que
+    `/mfa/verificar`, que sempre foi protegida, e o prêmio aqui é maior:
+    `/mfa/verificar` dá uma sessão, esta **desliga o segundo fator**.
+
+    A avaliação vem antes de conferir qualquer credencial, como em
+    `/mfa/verificar`, e a tentativa é registrada nos dois desfechos. A
+    consequência precisa estar dita: `registrar_tentativa` grava em
+    `tentativas_login` com o e-mail da pessoa, e essas linhas contam para a
+    trava de conta — errar muitas vezes aqui tranca o login dela. É o preço de
+    não deixar seis dígitos serem sondados de graça, e é o mesmo comportamento
+    que `/mfa/verificar` já tinha.
+
+    O 409 de MFA não ativado vem **antes** do freio: ele não olha credencial
+    nenhuma e não custa Argon2, e responder 429 a quem nem tem segundo fator
+    para desligar só esconderia o erro real de quem integra.
+
     O segredo é apagado junto com a flag, e não guardado "para o caso de
     religar": segredo órfão de MFA desligado só serve para vazar num dump
     depois. Religar é `POST /mfa/iniciar` de novo, com um segredo novo.
@@ -753,6 +775,13 @@ def desativar_mfa(
             detail=MENSAGEM_MFA_NAO_ATIVO,
         )
 
+    ip = protecao.ip_do_request(request, settings)
+    bloqueio = protecao.avaliar_bloqueio(
+        session, email=usuario.email, ip=ip, settings=settings, agora=agora
+    )
+    if bloqueio is not None:
+        raise _bloqueado(bloqueio)
+
     senha_ok = senhas.verificar(usuario.senha_hash, corpo.senha)
     passo = mfa.verificar_codigo(
         usuario.mfa_secret,
@@ -762,6 +791,8 @@ def desativar_mfa(
         ultimo_passo=usuario.mfa_ultimo_passo,
     )
     if not senha_ok or passo is None:
+        protecao.registrar_tentativa(session, email=usuario.email, ip=ip, sucesso=False)
+        session.commit()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=MENSAGEM_MFA_CODIGO_INVALIDO,
@@ -773,6 +804,10 @@ def desativar_mfa(
     session.execute(
         delete(CodigoRecuperacaoMfa).where(CodigoRecuperacaoMfa.usuario_id == usuario.id)
     )
+    # O sucesso é registrado como em `/mfa/verificar`: esta é reautenticação
+    # completa (senha **e** código), e zerar o contador evita que erros de
+    # digitação anteriores continuem pesando contra quem acabou de provar quem é.
+    protecao.registrar_tentativa(session, email=usuario.email, ip=ip, sucesso=True)
     session.commit()
 
 

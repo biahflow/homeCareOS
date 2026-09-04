@@ -750,3 +750,85 @@ def test_reemitir_e_travada_por_tentativa_e_nao_so_contada(
         assert bloqueada.headers["retry-after"]
     finally:
         app.dependency_overrides.clear()
+
+
+# --- 21. o freio que faltava em `/mfa/desativar` -------------------------------
+
+
+def test_desativar_e_travada_por_tentativa_e_nao_so_contada(
+    settings: Settings, usuario: Usuario
+) -> None:
+    """Regressão de segurança: `/mfa/desativar` precisa CONSULTAR o bloqueio.
+
+    A rota exigia senha e código desde sempre, e isso parecia bastar. Não
+    bastava: sem freio, quem tivesse a senha sondava os 10⁶ códigos de seis
+    dígitos sem 429, sem atraso e sem deixar linha em `tentativas_login` — e o
+    prêmio aqui é maior que o de `/mfa/verificar`, que sempre foi protegida.
+    Lá o sucesso dá uma sessão; aqui **desliga o segundo fator** da conta.
+
+    Registrar sem consultar não resolveria: as falhas trancariam apenas o
+    *login seguinte*, que o atacante não precisa fazer — ele já está com a
+    sessão na mão e sonda até ela expirar.
+    """
+    limiar = 3
+    app.dependency_overrides[get_settings] = lambda: settings.model_copy(
+        update={
+            "api_keys": TEST_API_KEY,
+            "environment": "local",
+            "login_atraso_base_segundos": 0.0,
+            "login_atraso_maximo_segundos": 0.0,
+            "login_falhas_para_travar_conta": limiar,
+        }
+    )
+    try:
+        cliente = TestClient(app)
+        segredo, _ = _ativar_mfa(cliente, usuario)
+
+        for _ in range(limiar):
+            recusado = cliente.post(
+                "/api/auth/mfa/desativar",
+                json={"senha": SENHA_DE_TESTE, "codigo": _codigo_errado(segredo)},
+            )
+            assert recusado.status_code == 422
+
+        bloqueada = cliente.post(
+            "/api/auth/mfa/desativar",
+            json={"senha": SENHA_DE_TESTE, "codigo": _codigo_errado(segredo)},
+        )
+
+        assert bloqueada.status_code == 429
+        assert bloqueada.headers["retry-after"]
+        # E o segundo fator continua de pé: a sondagem não conseguiu desligá-lo.
+        assert cliente.post("/api/auth/mfa/iniciar").status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_desativar_registra_a_falha_em_tentativas_login(
+    api: TestClient, usuario: Usuario, sessao: Session
+) -> None:
+    """A falha aqui precisa deixar rastro, e não só ser recusada.
+
+    Sem a linha em `tentativas_login`, uma sondagem contra o segundo fator não
+    aparece em lugar nenhum: nem trava, nem alimenta a trava do login, nem é
+    investigável depois. É a metade da correção que o 429 sozinho não entrega.
+    """
+    segredo, _ = _ativar_mfa(api, usuario)
+    antes = sessao.scalar(
+        select(func.count())
+        .select_from(TentativaLogin)
+        .where(TentativaLogin.email_tentado == usuario.email, ~TentativaLogin.sucesso)
+    )
+
+    recusado = api.post(
+        "/api/auth/mfa/desativar",
+        json={"senha": "senha-errada-de-proposito", "codigo": _codigo(segredo, delta=1)},
+    )
+
+    assert recusado.status_code == 422
+    depois = sessao.scalar(
+        select(func.count())
+        .select_from(TentativaLogin)
+        .where(TentativaLogin.email_tentado == usuario.email, ~TentativaLogin.sucesso)
+    )
+    assert depois == (antes or 0) + 1

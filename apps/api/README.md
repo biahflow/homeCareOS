@@ -348,6 +348,16 @@ sequestrada desligaria o segundo fator sozinha, que é exatamente o que ele
 existe para impedir; com só a senha, bastaria a senha vazada, que é a hipótese
 que faz alguém ativar MFA. Senha errada e código errado respondem o mesmo 422.
 
+Exigir os dois não bastava sozinho, e essa foi uma lacuna real até a issue #39:
+**a rota não aplicava o freio da issue #33**, então os 10⁶ códigos de seis
+dígitos podiam ser sondados sem 429, sem atraso e sem deixar linha em
+`tentativas_login`. Era um alvo mais barato que `/mfa/verificar`, que sempre foi
+protegida, com prêmio maior — lá o sucesso dá uma sessão, aqui desliga o segundo
+fator. Hoje o bloqueio é avaliado antes de conferir qualquer credencial e a
+tentativa é registrada nos dois desfechos, como em `/mfa/verificar` e
+`/mfa/reemitir-codigos`. A consequência vale saber: essas linhas contam para a
+trava de conta, então errar muitas vezes aqui bloqueia o login da pessoa.
+
 Os quatro exigem **sessão de usuário**: requisição por `X-API-Key` responde 403 —
 chave de máquina não tem celular nem app autenticador.
 
