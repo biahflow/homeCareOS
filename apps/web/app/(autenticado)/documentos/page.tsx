@@ -32,6 +32,21 @@ import { apiUrl, opcoesAutenticadas } from "@/lib/api-servidor";
 import { usuarioDaSessao } from "@/lib/sessao";
 
 /**
+ * Avisos que a própria aplicação pede pela URL ao mandar alguém para cá — hoje
+ * só o de quem tentou abrir `/usuarios` sem ser coordenador. Esta é a tela para
+ * onde o login leva, e por isso a que recebe quem foi recusado em outra.
+ *
+ * Mesma regra da tela de login: o valor que vem na query **nunca** é
+ * renderizado, só serve de chave neste mapa. Ecoar o parâmetro cru deixaria
+ * qualquer link montado por terceiro escrever o que quisesse na tela de quem
+ * está logado.
+ */
+const AVISOS: Record<string, string> = {
+  "usuarios-restrito":
+    "A administração de usuários é do papel de coordenador. Se você precisa cadastrar ou desativar alguém, peça a um coordenador.",
+};
+
+/**
  * Documentos em conferência: o envio e a fila do que já foi enviado.
  *
  * Server Component, com os filtros na URL (`searchParams`) — ver a docstring de
@@ -55,7 +70,9 @@ export default async function DocumentosPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const filtros = lerFiltros(await searchParams);
+  const parametros = await searchParams;
+  const filtros = lerFiltros(parametros);
+  const aviso = typeof parametros.motivo === "string" ? AVISOS[parametros.motivo] : undefined;
   // Memoizado por `cache` dentro desta renderização: o layout do grupo já
   // perguntou quem está logado e esta chamada reaproveita a resposta.
   const usuario = await usuarioDaSessao();
@@ -113,6 +130,12 @@ export default async function DocumentosPage({
           à operadora, e acompanhe aqui o que já foi enviado.
         </p>
       </div>
+
+      {aviso && (
+        <p role="status" className="alert--info">
+          {aviso}
+        </p>
+      )}
 
       <FormularioUpload />
 

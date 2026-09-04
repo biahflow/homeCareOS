@@ -1,4 +1,5 @@
 import { NavList } from "./NavList";
+import type { NavItem } from "./nav-items";
 
 /**
  * Conteúdo da sidebar: marca e navegação. Usado tanto na sidebar fixa de
@@ -9,7 +10,13 @@ import { NavList } from "./NavList";
  * ação de sessão e mora no `Topbar`, visível em qualquer largura — atrás da
  * gaveta, quem quisesse encerrar o turno teria de abrir um menu antes.
  */
-export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+export function SidebarContent({
+  itens,
+  onNavigate,
+}: {
+  itens: NavItem[];
+  onNavigate?: () => void;
+}) {
   return (
     <div className="flex h-full flex-col gap-6 py-5">
       <div className="brand-row">
@@ -22,7 +29,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       </div>
 
-      <NavList onNavigate={onNavigate} />
+      <NavList itens={itens} onNavigate={onNavigate} />
     </div>
   );
 }

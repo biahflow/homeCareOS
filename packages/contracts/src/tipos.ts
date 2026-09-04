@@ -433,6 +433,85 @@ export function ehUsuario(resposta: LoginResposta | EuResposta): resposta is Usu
   return "id" in resposta;
 }
 
+/* Usuários — `/api/usuarios` (ADR 0004). */
+
+/**
+ * Filtros de `GET /api/usuarios`.
+ *
+ * `ativo` é **três estados, não dois**: `true` só ativos, `false` só
+ * desativados, ausente todos. Quem o modela como booleano na interface perde o
+ * terceiro e passa a mostrar só metade do cadastro sem dizer que filtrou.
+ */
+export interface ListarUsuariosParams {
+  ativo?: boolean;
+  /** Itens por página. Padrão 50, máximo 200 (`api/pagination.py`). */
+  limite?: number;
+  offset?: number;
+}
+
+/**
+ * Corpo de `POST /api/usuarios`. **Não existe campo de senha, e é o ponto.**
+ *
+ * Quem administra não escolhe — nem conhece — a senha de ninguém: a API grava o
+ * hash de um valor aleatório descartado na mesma linha e devolve um token de
+ * definição de senha (ver {@link UsuarioCriadoOut}). Um campo de senha aqui
+ * faria o administrador conhecer a credencial de quem cadastrou, e na prática
+ * viraria um `Mudar@123` reusado na operação inteira.
+ *
+ * `papel` aceita os **três** valores de {@link Papel}, e não um subconjunto,
+ * porque é isso que a API aceita: ela recebe `gestor` e responde **403** —
+ * autorização, não formato — com a frase que diz o caminho certo (criar gestor
+ * é por linha de comando, no servidor). Estreitar o tipo aqui esconderia essa
+ * resposta de quem precisa tratá-la. Não oferecer `gestor` num seletor é
+ * decisão da interface, e mora nela.
+ */
+export interface CriarUsuarioParams {
+  /** Sem espaço nas pontas e não vazio — a API corta antes de validar o tamanho. */
+  nome: string;
+  /** Normalizado no servidor (minúsculas, sem espaço nas pontas), como no login. */
+  email: string;
+  papel: Papel;
+}
+
+/**
+ * Corpo de `PATCH /api/usuarios/{id}`: nome, papel e situação, todos opcionais.
+ * Campo omitido é campo **não alterado**.
+ *
+ * **Não há `email` e não é esquecimento**: o e-mail é a credencial de acesso da
+ * pessoa, e trocá-lo por ela não é o que este PATCH existe para fazer. Também
+ * não há senha, aqui nem em rota nenhuma desta administração — quem esqueceu a
+ * senha pede outra em `POST /api/auth/senha/esqueci`.
+ *
+ * `ativo: false` **revoga todas as sessões abertas** da pessoa, na mesma
+ * transação: desativar derruba quem está logado na hora, e não ao fim das 12h
+ * do cookie. Quem constrói a confirmação dessa ação precisa dizer isso.
+ */
+export interface AtualizarUsuarioParams {
+  nome?: string;
+  papel?: Papel;
+  ativo?: boolean;
+}
+
+/**
+ * Resposta de `POST /api/usuarios`: o usuário criado e o token com que ele
+ * define a própria senha — e **esta é a única vez que o token existe**.
+ *
+ * O banco guarda só o SHA-256 dele (`db/models/token_recuperacao.py`), nenhum
+ * endpoint o mostra de novo, e ele vale por tempo limitado e uma vez só. Mesma
+ * obrigação de {@link MfaCodigosRecuperacaoOut}, e o tipo não consegue
+ * expressá-la: dar a quem administra a chance de copiá-lo antes de sair da
+ * tela, e **não persisti-lo no cliente** — nem em log, nem em URL, nem no
+ * armazenamento do navegador. Persistir desfaz o motivo de a API só guardar o
+ * hash, e a conferência acontece em estação compartilhada.
+ *
+ * Perdido o token, não há reemissão por esta rota: a própria pessoa pede outro
+ * link em `POST /api/auth/senha/esqueci`.
+ */
+export interface UsuarioCriadoOut {
+  usuario: UsuarioOut;
+  token_definicao_senha: string;
+}
+
 /* Relatórios e métricas — `/api/relatorios` (issue #8). */
 
 /** Tipo do documento ingerido (`db/models/enums.py:TipoDocumento`). */
