@@ -1,9 +1,10 @@
 """Templates das mensagens de WhatsApp, um por tipo de alerta.
 
-O texto padrão é o da issue #9, com placeholders nomeados (`{paciente}`,
-`{deadline}`, ...). `ALERTAS_TEMPLATES` sobrescreve qualquer um deles sem
-deploy — é texto que quem opera quer ajustar ("Ação necessária" vira "O que
-fazer") sem passar por engenharia.
+O texto padrão é o da issue #9 (revisto depois do primeiro envio real, ver
+`README.md#o-texto-do-alerta-é-escrito-para-o-whatsapp-não-para-a-tela-issue-36`),
+com placeholders nomeados (`{operadora}`, `{deadline}`, ...). `ALERTAS_TEMPLATES`
+sobrescreve qualquer um deles sem deploy — é texto que quem opera quer ajustar
+sem passar por engenharia.
 
 ## Template customizado com erro nunca cala o alerta
 
@@ -33,11 +34,14 @@ VALOR_AUSENTE = "não informado"
 TEMPLATES_PADRAO: dict[TipoAlerta, str] = {
     TipoAlerta.DOCUMENTO_INCOMPLETO_CRITICO: (
         "🚨 *Pendência crítica*\n"
-        "Paciente: {paciente}\n"
+        "{linha_paciente}"
         "Operadora: {operadora}\n"
-        "Problema: {problema}\n"
-        "Deadline: {deadline}\n"
-        "Ação necessária: {acao}"
+        "Prazo: {deadline}\n"
+        "\n"
+        "Faltando:\n"
+        "{problema}\n"
+        "\n"
+        "{acao}"
     ),
     TipoAlerta.DEADLINE_COMPETENCIA: (
         "⏳ *Prazo de competência*\n"
@@ -56,13 +60,21 @@ TEMPLATES_PADRAO: dict[TipoAlerta, str] = {
     ),
     TipoAlerta.PENDENCIA_PARADA: (
         "⌛ *Pendência parada*\n"
-        "Paciente: {paciente}\n"
+        "{linha_paciente}"
         "Operadora: {operadora}\n"
         "Problema: {problema}\n"
         "Aberta há {horas}h sem ação.\n"
-        "Deadline: {deadline}"
+        "Prazo: {deadline}"
     ),
 }
+
+
+_FALLBACK_DE_LINHA: dict[str, str] = {"linha_paciente": ""}
+"""Placeholders de **linha inteira** (rótulo + valor + quebra de linha, ou nada)
+não podem cair no fallback `"não informado"` de `_ContextoTolerante`: colaria o
+texto sem quebra de linha na linha seguinte (`"não informadoOperadora: ..."`).
+Ausente daqui, um `{linha_x}` que falte cai no fallback igual a qualquer outro —
+esta é uma exceção nomeada, não um mecanismo genérico."""
 
 
 class _ContextoTolerante(dict[str, str]):
@@ -74,7 +86,7 @@ class _ContextoTolerante(dict[str, str]):
     """
 
     def __missing__(self, chave: str) -> str:
-        return VALOR_AUSENTE
+        return _FALLBACK_DE_LINHA.get(chave, VALOR_AUSENTE)
 
 
 def renderizar(tipo: TipoAlerta, contexto: dict[str, str], settings: Settings) -> str:

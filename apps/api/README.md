@@ -155,6 +155,45 @@ síncrono e está no caminho do upload (teto: `ALERTAS_TIMEOUT_SEGUNDOS`), abre 
 própria sessão e **nunca levanta**: notificação não pode derrubar ingestão de
 documento. `false` desliga o gancho e deixa o caso para a varredura periódica.
 
+### O texto do alerta é escrito para o WhatsApp, não para a tela
+
+O gancho foi exercitado pela primeira vez em produção e a mensagem chegou
+ilegível: os detectores despejavam `Pendencia.descricao` — texto escrito para a
+tela de conferência, que **já nomeia o campo** (`assinatura_profissional_presente:
+Campo 'assinatura_profissional_presente' não é verdadeiro (...)`) — direto no
+WhatsApp. Três pendências viravam uma parede de texto grudada por `" | "`, e
+"Deadline" aparecia em inglês num sistema que fala português.
+
+`classification/engine._descricao` **não mudou**: aquele texto continua
+servindo à tela de conferência, ao relatório (`GET /relatorios/conferencia`) e
+ao CSV. Os dois detectores que alimentam `documento_incompleto_critico` e
+`pendencia_parada` (`alerts/detectores.py`) pararam de usar `Pendencia.descricao`
+e passaram a usar `Pendencia.campo`, traduzido pelo vocabulário novo
+`alerts/vocabulario.py` (`rotulo_de_campo`) — onze campos conhecidos com rótulo
+humano ("Assinatura do profissional", "Carimbo legível", ...), e **fallback no
+próprio nome técnico do campo** para qualquer campo fora desse conjunto (regra
+nova criada pela API depois desta entrega, por exemplo). Um alerta com nome de
+coluna feio ainda é um alerta; um alerta que desaparece porque o campo era
+desconhecido não é.
+
+**Placeholders que mudaram, para quem tem `ALERTAS_TEMPLATES` configurado:**
+
+| tipo | placeholder | antes | depois |
+| --- | --- | --- | --- |
+| `documento_incompleto_critico`, `pendencia_parada` | `{problema}` | a `descricao` bruta da pendência (texto técnico, concatenado por `" | "` quando eram várias) | rótulo(s) legível(is); no crítico, uma linha por pendência com marcador `•`, separadas por quebra de linha |
+| `documento_incompleto_critico`, `pendencia_parada` | `{paciente}` | **sem mudança** — continua o nome cru, ou `"não informado"` | sem mudança (mantido por compatibilidade; o template padrão não o usa mais diretamente) |
+| `documento_incompleto_critico`, `pendencia_parada` | `{linha_paciente}` **(novo)** | não existia | `"Paciente: <nome>\n"`, ou string vazia sem paciente vinculado — é o que tira a linha `Paciente: não informado` sem virar template condicional |
+
+Nenhum placeholder foi **removido**: um override já configurado que use
+`{paciente}`, `{problema}`, `{operadora}`, `{deadline}` etc. continua
+funcionando — só o *conteúdo* de `{problema}` mudou de forma (deixou de ser a
+frase técnica da tela). Um override que precise da linha condicional de
+paciente precisa passar a referenciar `{linha_paciente}`; quem não referenciar
+continua recebendo `{paciente}` com o valor de sempre. O texto literal
+`"Deadline:"` dos dois templates padrão virou `"Prazo:"` — como sempre, um
+override com placeholder que o contexto não tem cai no padrão com
+`logger.warning`, sem derrubar a varredura (`alerts/templates.renderizar`).
+
 ## Autenticação
 
 Duas credenciais convivem, e não se substituem (ADR 0001, issue #30):
