@@ -13,13 +13,15 @@ avisado) é `alerts/service.py`.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, time, timedelta
 
-from sqlalchemy import func, literal, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session
 
 from homecareos.alerts.schema import Alerta, TipoAlerta
+from homecareos.alerts.vocabulario import rotulo_de_campo
 from homecareos.config import Settings
 from homecareos.db.models import (
     Documento,
@@ -44,8 +46,6 @@ ACAO_DOCUMENTO_CRITICO = "Reenviar a evolução com carimbo e assinatura."
 SEM_OPERADORA = "sem-operadora"
 VALOR_AUSENTE = "não informado"
 
-_SEPARADOR_PROBLEMAS = " | "
-
 
 def _texto(valor: str | None) -> str:
     """`None` e string vazia viram `"não informado"`, nunca `"None"` na mensagem."""
@@ -58,6 +58,29 @@ def _data(momento: datetime | None) -> str:
 
 def _percentual(taxa: float) -> str:
     return f"{taxa * 100:.1f}%"
+
+
+def _linha_paciente(nome: str | None) -> str:
+    """`"Paciente: <nome>\\n"`, ou string vazia sem paciente vinculado ao documento.
+
+    `"Paciente: não informado"` é ruído quando não há paciente algum — foi um
+    dos três defeitos da primeira mensagem real que o gateway enviou (issue
+    #9). O jeito de tirar a linha inteira sem transformar o template numa
+    mini-linguagem com condicional é o próprio detector decidir a linha, como
+    a docstring de `Alerta.contexto` já manda: "o detector é quem sabe
+    formatar (...) do seu próprio alerta".
+    """
+    return f"Paciente: {nome}\n" if nome else ""
+
+
+def _lista_de_problemas(campos: Sequence[str | None]) -> str:
+    """Rótulos legíveis, um por linha com marcador — não mais `" | "` grudado.
+
+    Cada `campo` já chega na ordem de `Pendencia.created_at` (a consulta pede
+    isso via `aggregate_order_by`); esta função só troca o nome técnico pelo
+    rótulo humano e formata a lista.
+    """
+    return "\n".join(f"• {rotulo_de_campo(campo)}" for campo in campos)
 
 
 def detectar_documento_incompleto_critico(
@@ -74,10 +97,7 @@ def detectar_documento_incompleto_critico(
             Documento.id,
             Paciente.nome,
             Operadora.nome,
-            func.string_agg(
-                Pendencia.descricao,
-                aggregate_order_by(literal(_SEPARADOR_PROBLEMAS), Pendencia.created_at),
-            ),
+            func.array_agg(aggregate_order_by(Pendencia.campo, Pendencia.created_at)),
             func.min(Pendencia.deadline),
         )
         .join(Pendencia, Pendencia.documento_id == Documento.id)
@@ -100,13 +120,14 @@ def detectar_documento_incompleto_critico(
             documento_id=doc_id,
             contexto={
                 "paciente": _texto(paciente),
+                "linha_paciente": _linha_paciente(paciente),
                 "operadora": _texto(operadora),
-                "problema": _texto(problema),
+                "problema": _lista_de_problemas(campos),
                 "deadline": _data(deadline),
                 "acao": ACAO_DOCUMENTO_CRITICO,
             },
         )
-        for doc_id, paciente, operadora, problema, deadline in session.execute(stmt).all()
+        for doc_id, paciente, operadora, campos, deadline in session.execute(stmt).all()
     ]
 
 
@@ -241,7 +262,7 @@ def detectar_pendencia_parada(session: Session, settings: Settings) -> list[Aler
     stmt = (
         select(
             Pendencia.id,
-            Pendencia.descricao,
+            Pendencia.campo,
             Pendencia.created_at,
             Pendencia.deadline,
             Documento.id,
@@ -261,15 +282,16 @@ def detectar_pendencia_parada(session: Session, settings: Settings) -> list[Aler
             documento_id=doc_id,
             contexto={
                 "paciente": _texto(paciente),
+                "linha_paciente": _linha_paciente(paciente),
                 "operadora": _texto(operadora),
-                "problema": _texto(descricao),
+                "problema": rotulo_de_campo(campo),
                 "horas": str(int((agora - criada_em).total_seconds() // 3600)),
                 "deadline": _data(deadline),
             },
         )
         for (
             pendencia_id,
-            descricao,
+            campo,
             criada_em,
             deadline,
             doc_id,

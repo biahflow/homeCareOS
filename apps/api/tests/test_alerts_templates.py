@@ -17,8 +17,9 @@ from homecareos.config import Settings
 CONTEXTOS: dict[TipoAlerta, dict[str, str]] = {
     TipoAlerta.DOCUMENTO_INCOMPLETO_CRITICO: {
         "paciente": "Maria de Souza",
+        "linha_paciente": "Paciente: Maria de Souza\n",
         "operadora": "Unimed",
-        "problema": "carimbo ausente",
+        "problema": "• Carimbo",
         "deadline": "10/04/2099",
         "acao": "Reenviar a evolução com carimbo e assinatura.",
     },
@@ -38,8 +39,9 @@ CONTEXTOS: dict[TipoAlerta, dict[str, str]] = {
     },
     TipoAlerta.PENDENCIA_PARADA: {
         "paciente": "João Pereira",
+        "linha_paciente": "Paciente: João Pereira\n",
         "operadora": "Caberj",
-        "problema": "assinatura ausente",
+        "problema": "Assinatura do profissional",
         "horas": "72",
         "deadline": "10/04/2099",
     },
@@ -75,7 +77,7 @@ def test_override_valido_substitui_o_template_padrao() -> None:
         TipoAlerta.PENDENCIA_PARADA, CONTEXTOS[TipoAlerta.PENDENCIA_PARADA], settings
     )
 
-    assert mensagem == "Parada há 72h: assinatura ausente"
+    assert mensagem == "Parada há 72h: Assinatura do profissional"
 
 
 def test_override_com_placeholder_inexistente_cai_para_o_padrao_sem_levantar() -> None:
@@ -96,12 +98,33 @@ def test_override_com_placeholder_inexistente_cai_para_o_padrao_sem_levantar() -
 
 def test_valor_ausente_no_contexto_nunca_vira_none_na_mensagem() -> None:
     contexto = dict(CONTEXTOS[TipoAlerta.PENDENCIA_PARADA])
-    del contexto["paciente"]
+    del contexto["operadora"]
 
     mensagem = templates.renderizar(TipoAlerta.PENDENCIA_PARADA, contexto, _settings())
 
-    assert f"Paciente: {templates.VALOR_AUSENTE}" in mensagem
+    assert f"Operadora: {templates.VALOR_AUSENTE}" in mensagem
     assert "None" not in mensagem
+
+
+def test_linha_paciente_vazia_omite_a_linha_inteira() -> None:
+    """ "Paciente: não informado" era ruído sem paciente algum — a linha some,
+    em vez de o placeholder virar "não informado"."""
+    contexto = dict(CONTEXTOS[TipoAlerta.DOCUMENTO_INCOMPLETO_CRITICO])
+    contexto["linha_paciente"] = ""
+
+    mensagem = templates.renderizar(TipoAlerta.DOCUMENTO_INCOMPLETO_CRITICO, contexto, _settings())
+
+    assert "Paciente" not in mensagem
+
+
+@pytest.mark.parametrize(
+    "tipo", [TipoAlerta.DOCUMENTO_INCOMPLETO_CRITICO, TipoAlerta.PENDENCIA_PARADA]
+)
+def test_templates_dizem_prazo_e_nao_deadline(tipo: TipoAlerta) -> None:
+    mensagem = templates.renderizar(tipo, CONTEXTOS[tipo], _settings())
+
+    assert "Prazo" in mensagem
+    assert "Deadline" not in mensagem
 
 
 def test_templates_com_json_malformado_levanta_alert_config_error() -> None:

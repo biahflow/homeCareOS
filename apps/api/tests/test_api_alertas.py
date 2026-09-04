@@ -393,7 +393,10 @@ def test_detector_critico_pega_incompleto_com_campo_critico_e_so_ele(
     assert alerta.chave == f"documento:{cenario.critico.id}"
     assert alerta.contexto["paciente"] == "Maria de Souza"
     assert alerta.contexto["operadora"] == "Operadora Alertas"
-    assert "carimbo ausente" in alerta.contexto["problema"]
+    # A pendência do cenário é `campo="carimbo_presente"` — o rótulo humano
+    # aparece, não o nome técnico da coluna nem a `descricao` da tela de
+    # conferência (o nome do campo aparecia duplicado na mensagem).
+    assert alerta.contexto["problema"] == "• Carimbo"
 
 
 def test_detector_critico_filtrado_por_documento_ignora_os_demais(
@@ -410,6 +413,52 @@ def test_detector_critico_filtrado_por_documento_ignora_os_demais(
         sessao, settings, documento_id=cenario.critico.id
     )
     assert [a.documento_id for a in alertas] == [cenario.critico.id]
+
+
+def test_detector_critico_agrega_multiplas_pendencias_em_linhas_com_marcador(
+    sessao: Session, settings: Settings, cenario: Cenario
+) -> None:
+    """A mensagem real que motivou esta correção: três pendências críticas viravam
+    uma parede de texto grudada por `" | "`. Agora cada uma é uma linha com
+    marcador, na ordem em que foram abertas — e sem repetir o nome do campo."""
+    agora = datetime.now(UTC)
+    documento = Documento(
+        operadora_id=cenario.operadora.id,
+        paciente_id=cenario.paciente.id,
+        tipo=TipoDocumento.EVOLUCAO,
+        arquivo_url=f"s3://fake/alertas/{uuid.uuid4()}",
+        competencia=COMPETENCIA,
+        status=DocumentoStatus.INCOMPLETO,
+    )
+    sessao.add(documento)
+    sessao.flush()
+    for indice, campo in enumerate(
+        ["assinatura_profissional_presente", "carimbo_presente", "carimbo_legivel"]
+    ):
+        sessao.add(
+            Pendencia(
+                documento_id=documento.id,
+                tipo_problema="campo_invalido",
+                campo=campo,
+                descricao=f"{campo}: Campo '{campo}' não é verdadeiro.",
+                responsavel="equipe-conferencia",
+                status=PendenciaStatus.ABERTA,
+                deadline=agora + timedelta(days=365),
+                created_at=agora + timedelta(seconds=indice),
+            )
+        )
+    sessao.commit()
+    cenario.documentos.append(documento.id)
+
+    alertas = detectar_documento_incompleto_critico(sessao, settings, documento_id=documento.id)
+
+    (alerta,) = alertas
+    assert alerta.contexto["problema"] == (
+        "• Assinatura do profissional\n• Carimbo\n• Carimbo legível"
+    )
+    assert " | " not in alerta.contexto["problema"]
+    # O nome técnico não aparece duplicado nem sozinho: só o rótulo.
+    assert "carimbo_presente" not in alerta.contexto["problema"]
 
 
 # --- envio e log --------------------------------------------------------------
@@ -542,6 +591,44 @@ def test_pendencia_parada_pega_aberta_antiga_e_ignora_recente_e_em_correcao(
     assert f"pendencia:{cenario.pendencia_em_correcao.id}" not in chaves
     parada = next(a for a in alertas if a.chave == f"pendencia:{cenario.pendencia_parada.id}")
     assert int(parada.contexto["horas"]) >= 72
+    assert parada.contexto["problema"] == "Carimbo"
+
+
+def test_pendencia_parada_com_campo_fora_do_vocabulario_ainda_produz_alerta(
+    sessao: Session, settings: Settings, cenario: Cenario
+) -> None:
+    """Campo que o vocabulário não conhece (regra nova, criada pela
+    API depois desta entrega) não pode fazer o alerta sumir — cai no fallback
+    previsível do próprio nome técnico."""
+    agora = datetime.now(UTC)
+    documento = Documento(
+        operadora_id=cenario.operadora.id,
+        paciente_id=cenario.paciente.id,
+        tipo=TipoDocumento.EVOLUCAO,
+        arquivo_url=f"s3://fake/alertas/{uuid.uuid4()}",
+        competencia=COMPETENCIA,
+        status=DocumentoStatus.INCOMPLETO,
+    )
+    sessao.add(documento)
+    sessao.flush()
+    pendencia = Pendencia(
+        documento_id=documento.id,
+        tipo_problema="campo_invalido",
+        campo="campo_novo_sem_rotulo",
+        descricao="campo_novo_sem_rotulo: alguma coisa não está certa",
+        responsavel="equipe-conferencia",
+        status=PendenciaStatus.ABERTA,
+        deadline=agora + timedelta(days=365),
+        created_at=agora - timedelta(hours=72),
+    )
+    sessao.add(pendencia)
+    sessao.commit()
+    cenario.documentos.append(documento.id)
+
+    alertas = detectar_pendencia_parada(sessao, settings)
+    encontrado = next(a for a in alertas if a.chave == f"pendencia:{pendencia.id}")
+
+    assert encontrado.contexto["problema"] == "campo_novo_sem_rotulo"
 
 
 def test_volume_anormal_nao_dispara_abaixo_do_piso_mesmo_com_taxa_de_100_por_cento(
