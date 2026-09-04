@@ -4,6 +4,7 @@ import { ApiError, listarOperadoras, obterDocumento } from "@homecareos/contract
 import type { DocumentoDetalhe, Operadora, ValidacaoResumo } from "@homecareos/contracts";
 import { AcaoRevalidar } from "@/components/documentos/AcaoRevalidar";
 import { CAMINHO_DOCUMENTOS } from "@/components/documentos/filtros";
+import { ImagemDocumento } from "@/components/documentos/ImagemDocumento";
 import {
   camposDaExtracao,
   formatarConfianca,
@@ -68,30 +69,26 @@ function NaoEncontrado({ id }: { id: string }) {
 }
 
 /**
- * A conferência de um documento: o que a extração leu, com que confiança, o que
- * as regras da operadora decidiram, e a revalidação.
+ * A conferência de um documento: a página escaneada, o que a extração leu, com
+ * que confiança, o que as regras da operadora decidiram, e a revalidação.
  *
- * Server Component. Três coisas desta tela são contrato, e não escolha de
+ * Server Component. Duas coisas desta tela são contrato, e não escolha de
  * layout:
  *
- * 1. **O documento escaneado não aparece, e não é esquecimento.** `arquivo_url`
- *    guarda a *chave do objeto no storage* (`documentos/{id}/{sha256}.png`), não
- *    um endereço, e **nenhum endpoint da API serve o arquivo nem devolve URL
- *    assinada** — `storage.presigned_url()` existe e não é chamado por rota
- *    nenhuma. Não há `<img>` nem `<a href>` apontando para ela em lugar nenhum
- *    desta tela: os dois produziriam um link quebrado. A chave é mostrada como
- *    referência técnica, para quem for procurar o objeto no storage, e a
- *    limitação é dita em voz alta — quem confere precisa saber que está
- *    conferindo sem o documento na frente.
- * 2. **A confiança é mostrada como veio.** Ela é a incerteza do produto: a
+ * 1. **A confiança é mostrada como veio.** Ela é a incerteza do produto: a
  *    extração é feita por Vision e erra, e é a confiança por campo que diz onde
  *    olhar primeiro. Os campos vêm ordenados do menos lido para o mais lido, o
  *    número aparece junto do rótulo, e nada é arredondado para cima.
- * 3. **A autorização aqui é a da fila de pendências, não a dos relatórios.**
+ * 2. **A autorização aqui é a da fila de pendências, não a dos relatórios.**
  *    `POST /revalidar` exige conferente ou coordenador; o gestor lê a operação e
  *    não faz conferência (ADR 0001). É o inverso do baseline de `/relatorios`,
  *    que só o gestor escreve. Esconder a ação para o gestor é ergonomia; a
  *    autoridade é o 403 da API, tratado em `AcaoRevalidar`.
+ *
+ * A página escaneada (`GET /api/documentos/{id}/arquivo`, PR #54) é exibida por
+ * `ImagemDocumento` — Client Component pelo motivo escrito lá: o 404 de
+ * "arquivo sumiu do storage" só se descobre em runtime, no `onError` do
+ * `<img>`.
  */
 export default async function DocumentoPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -215,18 +212,18 @@ export default async function DocumentoPage({ params }: { params: Promise<{ id: 
             <code className="text-xs break-all">{documento.id}</code>
           </Dado>
         </dl>
+      </section>
 
-        {/* Achado de produto declarado na tela, e não escondido: quem confere
-            está conferindo sem o documento na frente, e precisa saber disso. */}
-        <div className="alert--info mt-5 flex-col items-start gap-1">
-          <span>
-            <strong className="text-ink">A evolução escaneada não é exibida aqui.</strong> A API
-            guarda apenas a chave do arquivo no storage e não tem endpoint que o sirva nem que
-            devolva URL assinada — o valor abaixo é referência técnica para localizar o objeto, não
-            um link.
-          </span>
-          <code className="text-[11px] break-all text-ink">{documento.arquivo_url}</code>
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>Documento escaneado</h2>
         </div>
+
+        {/* A imagem é o objeto do trabalho desta tela — quem confere veio
+            comparar o papel com o que a extração leu — então ganha uma seção
+            própria com espaço de verdade, não uma miniatura ao lado dos
+            metadados. */}
+        <ImagemDocumento documentoId={documento.id} />
       </section>
 
       <section className="panel">
