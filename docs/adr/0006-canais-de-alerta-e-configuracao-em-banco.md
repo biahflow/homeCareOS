@@ -1,6 +1,6 @@
 # ADR 0006 — Canais de alerta e configuração em banco
 
-- **Status:** proposto
+- **Status:** aceito
 - **Data:** 2026-09-04
 - **Issue:** #9
 - **Relacionado:** [ADR 0001](0001-autenticacao-de-usuario-na-api.md), que criou a matriz
@@ -66,10 +66,10 @@ superconjunto de ninguém: é outro eixo — lê a operação inteira, não a ex
 gestor tem **um único write** em todo o sistema: `PUT /api/relatorios/baseline`. Tudo o
 que é configuração — regras, usuários — é do coordenador, e o gestor recebe 403.
 
-Pôr "ligar e desligar canal de alerta" no gestor lhe dá o segundo write do sistema. Isso
-é defensável — decidir por onde a operação é avisada é política, não execução, e o gestor
-já lê `/api/alertas` — mas **estica a matriz**, e vale dizer isso em voz alta antes de
-codar, não depois.
+Uma primeira versão deste ADR pôs a configuração dos canais no gestor, e isso lhe daria o
+segundo write do sistema. Ficou registrado aqui porque a alternativa foi considerada e
+descartada por incoerência com a matriz: ligar e desligar canal é operação, e quem opera
+é o coordenador.
 
 Há um agravante de segurança: **quem desliga um canal silencia a operação.** Se o
 WhatsApp for desligado por engano numa sexta-feira, ninguém recebe o aviso de prazo de
@@ -120,17 +120,18 @@ porque não configurei" são indistinguíveis. A tela precisa mostrar os dois es
 separadamente, sob pena de alguém ligar um canal na interface e não entender por que nada
 sai.
 
-### Quem configura: o gestor — e o que isso custa
+### Quem configura: o coordenador
 
-Seguindo o pedido, ligar e desligar canal é do **gestor**, com o coordenador podendo ler.
-A justificativa que sustenta isso na matriz: é decisão de política sobre como a operação é
-avisada, não execução de conferência — a mesma natureza do baseline, que já é o write
-exclusivo do gestor.
+Ligar e desligar canal é do **coordenador**, e o gestor lê — mesma divisão que
+`/api/alertas` já tem hoje.
 
-**Isto estica a matriz do ADR 0001 de forma deliberada**, e o custo precisa estar
-registrado: o gestor passa a ter um segundo write, e ele silencia a operação inteira.
+Isso mantém a matriz do ADR 0001 intacta, e pela razão certa: quem configura o sistema é
+quem o opera. As regras de validação por operadora e o cadastro de quem entra já são do
+coordenador; por onde a operação é avisada é da mesma natureza. O gestor continua com um
+write só, o baseline, que é dado de gestão e não de operação.
 
-Por isso, e não por completude: **a mudança de estado de um canal é auditada**. Quem
+**Quem desliga um canal silencia a operação**, e é isso que torna a auditoria obrigatória
+— não completude: **a mudança de estado de um canal é auditada**. Quem
 ligou, quem desligou, quando. Sem isso, "por que ninguém foi avisado?" é uma pergunta sem
 resposta possível — e é a pergunta que vai ser feita.
 
@@ -198,10 +199,6 @@ perdido silenciam a operação inteira, e hoje não há segundo caminho.
 
 ## O que fica em aberto
 
-- **A tela é do gestor, e isso estica a matriz de papéis.** Está decidido acima por
-  pedido explícito, e registrado aqui como desvio consciente da leitura do ADR 0001. Se a
-  intenção era o coordenador — que é quem administra regras e usuários hoje —, é este o
-  parágrafo a mudar, e é barato mudar agora.
 - **Os alertas por e-mail vão para quais papéis, em qual tipo de alerta?** Mandar todos os
   quatro tipos para coordenador e gestor é o padrão óbvio, e é provavelmente ruído demais.
   Isso é calibragem de produto e precisa de uma conversa, não de um default inventado aqui.
