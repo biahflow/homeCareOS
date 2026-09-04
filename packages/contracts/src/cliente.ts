@@ -3,6 +3,10 @@ import type {
   EuResposta,
   LoginParams,
   LoginResposta,
+  MfaCodigosRecuperacaoOut,
+  MfaConfirmarParams,
+  MfaDesativarParams,
+  MfaIniciarOut,
   MfaVerificarParams,
   UploadParams,
   UploadResponse,
@@ -167,6 +171,76 @@ export async function verificarMfa(
     body: JSON.stringify(params),
   });
   return (await response.json()) as UsuarioOut;
+}
+
+/**
+ * `POST /api/auth/mfa/iniciar`: gera o segredo TOTP e **não ativa nada**.
+ *
+ * **Chamar de novo SUBSTITUI o segredo anterior** (`auth/router.py:iniciar_mfa`
+ * — "chamar de novo o **substitui**"). Isto não é detalhe de implementação, é o
+ * que decide onde esta função pode ser chamada: se ela rodar no carregamento da
+ * tela, cada recarga invalida o QR code que a pessoa acabou de escanear, e ela
+ * descobre isso como um 422 em {@link confirmarMfa} sem nenhuma pista da causa.
+ * **Só por ação explícita de quem está cadastrando**, uma vez — nunca em
+ * `useEffect` de montagem, nunca em render de Server Component (que, além
+ * disso, colocaria o segredo no payload RSC e no cache de rotas do cliente).
+ *
+ * 409 significa que o segundo fator **já está ativado** nesta conta: a API se
+ * recusa a trocar o segredo de quem já o usa, porque uma sessão sequestrada
+ * faria essa troca sem provar nada. Como `GET /api/auth/eu` não expõe
+ * `mfa_ativado`, este 409 é a única forma de a interface descobrir o estado — é
+ * resposta esperada, e não falha.
+ */
+export async function iniciarMfa(baseUrl: string): Promise<MfaIniciarOut> {
+  const response = await requisitar(baseUrl, "/api/auth/mfa/iniciar", { method: "POST" });
+  return (await response.json()) as MfaIniciarOut;
+}
+
+/**
+ * `POST /api/auth/mfa/confirmar`: prova que o app guardou o segredo, ativa o
+ * segundo fator e devolve os códigos de recuperação — **a única vez em que eles
+ * existem em claro**. Ver {@link MfaCodigosRecuperacaoOut}.
+ *
+ * 422 tem **duas** causas que o chamador não consegue distinguir, e a segunda é
+ * a que não ocorre a ninguém: o código pode estar errado, ou o segredo gravado
+ * pode ter sido substituído por uma chamada posterior a {@link iniciarMfa} —
+ * outra aba, outro dispositivo, a mesma pessoa recomeçando o cadastro. Quem
+ * trata precisa nomear as duas e oferecer o caminho de gerar um QR code novo;
+ * apresentar só "código incorreto" manda a pessoa digitar de novo, para sempre,
+ * um código que nunca vai valer.
+ */
+export async function confirmarMfa(
+  baseUrl: string,
+  params: MfaConfirmarParams,
+): Promise<MfaCodigosRecuperacaoOut> {
+  const response = await requisitar(baseUrl, "/api/auth/mfa/confirmar", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return (await response.json()) as MfaCodigosRecuperacaoOut;
+}
+
+/**
+ * `POST /api/auth/mfa/desativar`: desliga o segundo fator apresentando senha
+ * **e** código. Responde 204, sem corpo.
+ *
+ * 422 é o **mesmo** para senha errada e para código errado, de propósito
+ * (`MfaDesativarRequest`: "duas mensagens diriam qual dos dois o atacante já
+ * tem"). Quem trata não deve tentar deduzir qual dos dois falhou nem separar as
+ * mensagens — não há informação aqui para isso, e inventá-la desfaria a
+ * proteção.
+ *
+ * A operação é destrutiva e silenciosa: apaga o segredo, a flag e **os códigos
+ * de recuperação**. Não há como voltar atrás; religar é {@link iniciarMfa} de
+ * novo, com segredo e códigos novos.
+ */
+export async function desativarMfa(baseUrl: string, params: MfaDesativarParams): Promise<void> {
+  await requisitar(baseUrl, "/api/auth/mfa/desativar", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
 }
 
 /**
