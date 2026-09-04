@@ -15,7 +15,12 @@ factory devolve `None` em vez de uma implementação nula. Extração sem provid
 ainda precisa devolver um `ExtractionResult` para o pipeline seguir; alerta sem
 gateway não tem nada para devolver, e um `NullProvider` que engolisse o envio
 faria a varredura reportar sucesso sem nunca ter notificado ninguém. `None` é o
-que permite ao `ResumoVarredura` dizer `provider_configurado: false`.
+que permite ao `ResumoVarredura` dizer que o canal está indisponível.
+
+Desde o ADR 0006 quem fala com esta porta é `alerts/canais.CanalWhatsApp`, e
+não mais o serviço: o serviço conhece só `CanalAlerta`. Nada aqui mudou — o
+contrato do gateway é o mesmo, e é justamente por ele ser mínimo que o segundo
+canal coube sem tocar neste arquivo.
 """
 
 from __future__ import annotations

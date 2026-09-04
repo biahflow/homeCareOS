@@ -95,18 +95,91 @@ Um `.xlsx` de verdade exigiria dependência nova (`openpyxl`) sem ganho neste
 momento — **desvio consciente** da issue, que pede "CSV/Excel", registrado
 também na docstring de `src/homecareos/reports/csv_export.py`.
 
-## Alertas de WhatsApp
+## Alertas
 
-Quatro alertas (issue #9), enviados por um gateway de WhatsApp e registrados em
-`alertas_enviados`. Endpoints sob `/api/alertas` — protegidos por `X-API-Key`
-como todo o resto de `/api/*`, e restritos a `coordenador` e `gestor` desde a
-issue #30 (`exigir_papel`, `conferente` recebe 403):
+Quatro alertas (issue #9), enviados por **dois canais independentes** —
+WhatsApp e e-mail (ADR 0006) — e registrados em `alertas_enviados`. Endpoints
+sob `/api/alertas` — protegidos por `X-API-Key` como todo o resto de `/api/*`,
+e restritos a `coordenador` e `gestor` desde a issue #30 (`exigir_papel`,
+`conferente` recebe 403):
 
 - `POST /varredura` — roda os quatro detectores e envia o que for novo. É o
   mesmo trabalho de `python -m homecareos.alerts.scan`
   (`docker compose run --rm api-alertas`), que é o que o cron chama.
 - `GET ""` — o log paginado do que foi enviado, falhou ou foi suprimido,
   filtrável por `tipo`, `status` e `documento_id`.
+
+### Os dois canais, e as duas perguntas que ligam cada um
+
+    canal habilitado (ALERTAS_CANAIS)  x  credencial presente (.env)  =  canal envia
+
+As duas perguntas são **diferentes** e o resumo da varredura responde as duas,
+canal a canal (`canais` em `POST /api/alertas/varredura` e na saída JSON do
+`python -m homecareos.alerts.scan`):
+
+```json
+"canais": {
+  "whatsapp": {"habilitado": true,  "disponivel": true},
+  "email":    {"habilitado": true,  "disponivel": false}
+}
+```
+
+`habilitado: true, disponivel: false` é "liguei o canal e esqueci a
+credencial" — o modo de falha que a recuperação de senha já tem hoje, e onde a
+única pista é uma linha de log. Manter os dois estados separados é o que evita
+alguém ligar um canal e não entender por que nada sai.
+
+| canal | credencial | destinatário | texto |
+| --- | --- | --- | --- |
+| `whatsapp` | `UAZAPI_BASE_URL` + `UAZAPI_TOKEN` | telefones de `ALERTAS_DESTINATARIOS` | emoji e `*negrito*` |
+| `email` | `SMTP_HOST` + `SMTP_REMETENTE` (o **mesmo** SMTP da recuperação de senha) | e-mails das contas **ativas** do papel (`ALERTAS_PAPEIS_EMAIL`) | texto puro, com assunto próprio |
+
+`ALERTAS_CANAIS=whatsapp` é o padrão, e preserva o comportamento anterior ao
+ADR: ligar o e-mail por padrão seria mandar mensagem que ninguém pediu. Vazio
+desliga tudo.
+
+**Os canais são independentes, nunca reserva um do outro.** Quem estiver nos
+dois recebe o mesmo aviso duas vezes, e isso é o desejado: um canal como
+fallback do outro exigiria saber que o primeiro falhou de verdade, e o gateway
+aceitar a mensagem não prova entrega. O ADR 0006 descartou fallback por isso.
+
+**Transição declarada:** o ADR 0006 decide que o liga/desliga vai para uma
+tabela de canais, editável pelo coordenador numa tela e com a mudança
+auditada — porque quem desliga um canal silencia a operação. Até lá é
+`ALERTAS_CANAIS`, e mudar exige acesso ao servidor. Quando a tabela existir, o
+que muda é `alerts/config.canais_habilitados`: nem o serviço, nem os templates,
+nem o log sabem de onde veio a resposta. A credencial continua no `.env` nos
+dois mundos.
+
+### Destinatário: por lista no WhatsApp, por papel no e-mail
+
+A assimetria é consequência do dado que existe, não escolha de desenho:
+`Usuario` tem `email`, `papel` e `ativo`, e **não tem telefone**. Então o
+WhatsApp continua com a lista solta de `ALERTAS_DESTINATARIOS`, e o e-mail
+resolve pelos usuários ativos do papel — o que fecha uma limitação que a issue
+#30 registrou: quem sai da equipe para de receber no ato de ser desativado, sem
+ninguém lembrar de editar variável.
+
+**Quais papéis recebem qual tipo (`ALERTAS_PAPEIS_EMAIL`) — ASSUNÇÃO deste
+time, NÃO requisito confirmado pelo cliente.** O ADR 0006 deixa esta calibragem
+explicitamente em aberto; o default existe porque um mapa vazio entregaria um
+canal que não notifica ninguém, e ele é sobrescrevível sem deploy:
+
+| tipo de alerta | papéis | razão |
+| --- | --- | --- |
+| `documento_incompleto_critico` | coordenador | é item individual: alguém precisa agir naquele documento |
+| `deadline_competencia` | coordenador | idem, com prazo |
+| `pendencia_parada` | coordenador | idem |
+| `volume_anormal` | coordenador, gestor | **o único sinal agregado dos quatro** — "a taxa de problema do dia saiu da média" é leitura da operação, que é o que o gestor faz (matriz do ADR 0001) |
+
+Mandar ao gestor um aviso por documento seria enchê-lo de item individual que
+ele não vai tratar — e alerta que não se trata ensina a ignorar o canal.
+
+`ALERTAS_PAPEIS_EMAIL` é sobrescrita **parcial** (tipo ausente usa o default),
+e é a única variável de alerta que funciona assim: exigir que quem muda um tipo
+redeclare os quatro faria o esquecimento de um silenciar aquele alerta. Lista
+vazia é o jeito explícito de desligar um tipo neste canal. **Papel sem nenhuma
+conta ativa simplesmente não recebe** — não é erro e não derruba a varredura.
 
 ### uazapi, e não Z-API — desvio consciente
 
@@ -139,21 +212,43 @@ documento com problema num dia parado dá 100% de taxa e dispara alerta todo dia
 
 ### Anti-bombardeio: duas defesas, uma delas silenciosa
 
-- **Cooldown** (`ALERTAS_COOLDOWN_HORAS`, mesmo assunto para o mesmo número):
-  pula **sem gravar linha**. A varredura roda de minuto em minuto; registrar
-  cada supressão encheria a tabela com centenas de linhas por dia por alerta e
-  esconderia as falhas de verdade no meio do ruído.
-- **Rate limit** (`ALERTAS_MAX_POR_HORA_POR_DESTINATARIO`): **grava** linha
-  `suprimido` com o motivo. Essa supressão é anômala — alguma notificação real
-  se perdeu — e alguém precisa poder descobrir isso depois.
+- **Cooldown** (`ALERTAS_COOLDOWN_HORAS`, mesmo assunto para o mesmo
+  **endereço**): pula **sem gravar linha**. A varredura roda de minuto em
+  minuto; registrar cada supressão encheria a tabela com centenas de linhas por
+  dia por alerta e esconderia as falhas de verdade no meio do ruído.
+- **Rate limit** (`ALERTAS_MAX_POR_HORA_POR_DESTINATARIO`, teto por
+  **pessoa**): **grava** linha `suprimido` com o motivo. Essa supressão é
+  anômala — alguma notificação real se perdeu — e alguém precisa poder
+  descobrir isso depois.
+
+**As duas contam sobre chaves diferentes, e é de propósito (ADR 0006).**
+
+O cooldown segue o endereço: dois canais são dois endereços, e o mesmo aviso
+sair no WhatsApp **e** no e-mail é o comportamento desejado. O que ele impede é
+a segunda varredura repetir o aviso no mesmo canal dentro da janela.
+
+O rate limit **não** pode seguir o endereço. Se seguisse, ligar o segundo canal
+daria a quem recebe nos dois o **dobro** de mensagens por hora — sem ninguém
+pedir, e sem erro nenhum aparecer. Por isso `alertas_enviados` ganhou
+`usuario_id`, e a contagem é por pessoa quando o sistema sabe de quem é o
+endereço. Quando não sabe — o telefone avulso de `ALERTAS_DESTINATARIOS`, que
+não tem dono porque não há telefone em `usuarios` — o endereço volta a ser a
+chave. É o melhor que o dado permite, e a assimetria fica declarada em vez de
+escondida.
+
+O nome da variável (`..._POR_DESTINATARIO`) ficou de quando havia um canal só e
+endereço era sinônimo de pessoa. Renomeá-la quebraria `.env` de produção sem
+mudar comportamento nenhum.
 
 ### O gancho na classificação
 
 Com `ALERTAS_HOOK_INLINE_HABILITADO=true` (padrão), o alerta de documento
-incompleto crítico sai já na classificação, sem esperar a varredura. O gancho é
-síncrono e está no caminho do upload (teto: `ALERTAS_TIMEOUT_SEGUNDOS`), abre a
-própria sessão e **nunca levanta**: notificação não pode derrubar ingestão de
-documento. `false` desliga o gancho e deixa o caso para a varredura periódica.
+incompleto crítico sai já na classificação — por **todos** os canais ligados —,
+sem esperar a varredura. O gancho é síncrono e está no caminho do upload (teto:
+`ALERTAS_TIMEOUT_SEGUNDOS`), abre a própria sessão e **nunca levanta**:
+notificação não pode derrubar ingestão de documento. Ele sai antes de abrir
+sessão quando nenhum canal está ligado com credencial. `false` desliga o gancho
+e deixa o caso para a varredura periódica.
 
 ### O texto do alerta é escrito para o WhatsApp, não para a tela
 
@@ -193,6 +288,56 @@ continua recebendo `{paciente}` com o valor de sempre. O texto literal
 `"Deadline:"` dos dois templates padrão virou `"Prazo:"` — como sempre, um
 override com placeholder que o contexto não tem cai no padrão com
 `logger.warning`, sem derrubar a varredura (`alerts/templates.renderizar`).
+
+### O template é por canal, e o e-mail tem assunto
+
+O texto de WhatsApp acima **não mudou** com a chegada do segundo canal: a
+marcação existe porque no WhatsApp ela funciona, e apagá-la para servir aos
+dois pioraria o canal que hoje é o único que roda. O e-mail nasceu com texto
+próprio, em texto puro — que é o único que `mailer/smtp.py` manda —, porque num
+e-mail os `*asteriscos*` apareceriam **literais**.
+
+O e-mail tem um espaço que o WhatsApp não tem: o **assunto**. Ele decide se a
+pessoa abre, e por isso nomeia o evento e não o remetente:
+
+| tipo | assunto |
+| --- | --- |
+| `documento_incompleto_critico` | `Pendência crítica — {operadora}` |
+| `deadline_competencia` | `Prazo de competência {competencia} — {operadora}` |
+| `volume_anormal` | `Volume anormal de problemas em {data}` |
+| `pendencia_parada` | `Pendência parada há {horas}h — {operadora}` |
+
+O assunto é sempre colapsado numa linha só antes de virar header. Isso é
+segurança e não estética: uma quebra de linha num header de e-mail é injeção de
+cabeçalho, e ela pode chegar por duas portas — um `ALERTAS_TEMPLATES`
+customizado e um valor do contexto, como o nome de uma operadora cadastrada com
+quebra de linha.
+
+**`ALERTAS_TEMPLATES` aceita duas formas, e a que já existe em produção
+continua valendo sem reescrita:**
+
+```jsonc
+// texto = override do WhatsApp, exatamente como antes do ADR 0006
+{"pendencia_parada": "Parada há {horas}h: {problema}"}
+
+// objeto = override espaço a espaço; espaço ausente = não sobrescrito
+{"pendencia_parada": {
+  "whatsapp":      "⌛ *Parada* há {horas}h",
+  "email_assunto": "[URGENTE] {operadora} parada há {horas}h",
+  "email_corpo":   "Operadora: {operadora}\nProblema: {problema}\n"
+}}
+```
+
+Os três espaços falham **separadamente**: um assunto customizado com typo cai
+para o assunto padrão e registra `logger.warning`, sem arrastar junto o corpo
+customizado que estava certo. Espaço desconhecido dentro do objeto é erro, pela
+mesma razão que tipo desconhecido é: um `"e-mail_assunto"` ignorado em silêncio
+viraria "o assunto que configurei nunca aparece e não sei por quê".
+
+`alertas_enviados.mensagem` guarda, no canal de e-mail, `Assunto: <assunto>`
+seguido de linha em branco e do corpo — auditar um envio é saber o que foi
+dito, e no e-mail o assunto é parte disso. No WhatsApp continua sendo o texto
+exato que o gateway recebeu, byte a byte.
 
 ## Autenticação
 
@@ -783,7 +928,7 @@ neutro, é exposição que só cresce. `auditoria_usuarios` entrou depois (issue
 | `tentativas_login` | trava de IP e de conta (`auth/protecao.avaliar_bloqueio`) | `LOGIN_JANELA_MINUTOS` (15 min por padrão) | o contador de falhas cai e o atacante ganha tentativas de volta |
 | `tokens_recuperacao` | teto de emissão (`auth/recuperacao.emissoes_recentes`) | `JANELA_DO_TETO`, 1h, **hardcoded** em `auth/recuperacao.py` | o teto de `SENHA_RESET_MAX_POR_HORA` afrouxa |
 | `alertas_enviados` | cooldown (`alerts/repository.existe_envio_recente`) | `ALERTAS_COOLDOWN_HORAS` (24h por padrão) | o mesmo alerta dispara de novo |
-| `alertas_enviados` | rate limit (`alerts/repository.contar_envios_desde`) | `JANELA_RATE_LIMIT`, 1h, **hardcoded** em `alerts/service.py` | o teto por destinatário afrouxa |
+| `alertas_enviados` | rate limit (`alerts/repository.contar_envios_desde`) | `JANELA_RATE_LIMIT`, 1h, **hardcoded** em `alerts/service.py` | o teto por pessoa afrouxa |
 | `auditoria_usuarios` | ninguém, como freio — só a leitura de `GET /api/usuarios/auditoria` | nenhuma | nada trava; a tabela é que deixa de responder à pergunta que a justifica |
 
 Por isso o expurgo **recusa-se a rodar** quando a retenção configurada for

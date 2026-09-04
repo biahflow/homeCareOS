@@ -19,6 +19,28 @@ arquivo inteiro:
 
 O teardown apaga tudo o que o teste criou, inclusive as linhas de
 `alertas_enviados` — inclusive as que o gancho da classificação grava.
+
+## Por que o canal de e-mail não despacha por papel aqui (ADR 0006)
+
+O canal de e-mail resolve destinatário pelos **usuários ativos** de um papel, e
+a base é compartilhada: outras trilhas deixam coordenador e gestor ativos que
+este módulo não criou. Despachar por papel de verdade aqui teria dois efeitos
+ruins, e o segundo é pior que o primeiro:
+
+1. a contagem de envios deixaria de ser determinística;
+2. as linhas gravadas apontariam (`alertas_enviados.usuario_id`) para usuários
+   de OUTROS módulos, e o `delete from usuarios` do teardown deles quebraria
+   por violação de FK — uma falha que apareceria no módulo errado.
+
+Por isso a divisão: a **resolução por papel** é exercitada contra o banco de
+verdade em `test_email_por_papel_*` (só leitura, nenhuma linha escrita), e o
+**despacho** usa o `CanalEmail` real com o destinatário fixado pelo teste
+(`CanalEmailComDestinatarioFixo`) — template, entrega e tradução de erro
+continuam sendo os de produção.
+
+**Nenhum e-mail e nenhuma mensagem de WhatsApp são enviados de verdade**: os
+dois gateways são dublês em memória, e não há credencial de uazapi nem de SMTP
+neste arquivo.
 """
 
 from __future__ import annotations
@@ -34,7 +56,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
-from homecareos.alerts import hooks
+from homecareos.alerts import hooks, repository, scan
+from homecareos.alerts.canais import CanalAlerta, CanalEmail, CanalWhatsApp
 from homecareos.alerts.detectores import (
     detectar_deadline_competencia,
     detectar_documento_incompleto_critico,
@@ -42,9 +65,18 @@ from homecareos.alerts.detectores import (
     detectar_volume_anormal,
 )
 from homecareos.alerts.errors import EnvioError
-from homecareos.alerts.router import obter_provider
-from homecareos.alerts.schema import Alerta, StatusAlerta, TipoAlerta
+from homecareos.alerts.router import obter_canais
+from homecareos.alerts.schema import (
+    Alerta,
+    Canal,
+    Destinatario,
+    MensagemAlerta,
+    StatusAlerta,
+    TipoAlerta,
+)
 from homecareos.alerts.service import despachar
+from homecareos.auth import senhas
+from homecareos.auth.schema import Papel
 from homecareos.classification.service import classificar_documento
 from homecareos.config import Settings, get_settings
 from homecareos.db.models import (
@@ -57,6 +89,7 @@ from homecareos.db.models import (
     Pendencia,
     PendenciaStatus,
     TipoDocumento,
+    Usuario,
 )
 from homecareos.db.models.enums import ResultadoValidacao
 from homecareos.db.session import get_sessionmaker
@@ -85,6 +118,18 @@ DESTINATARIO_A = _numero()
 DESTINATARIO_B = _numero()
 NUMEROS_DO_TESTE = (DESTINATARIO_A, DESTINATARIO_B)
 
+MARCA = uuid.uuid4().hex[:12]
+"""Marca deste processo de teste, embutida na `chave` dos alertas que os testes
+de canal criam. É o que permite ao teardown apagar as linhas por assunto, e não
+só por destinatário — necessário desde que o e-mail entrou, porque o endereço
+deixou de ser sempre um dos dois telefones conhecidos."""
+
+PREFIXO_CHAVE = f"documento:{MARCA}:"
+
+
+def _chave(nome: str) -> str:
+    return f"{PREFIXO_CHAVE}{nome}"
+
 
 class ProviderFake:
     """Gateway em memória: acumula o que recebeu e, se pedido, recusa o envio."""
@@ -97,6 +142,54 @@ class ProviderFake:
         if destinatario in self.falhar_para:
             raise EnvioError("gateway de WhatsApp recusou o envio: HTTP 401 Invalid token.")
         self.enviadas.append((destinatario, mensagem))
+
+
+class ProviderEmailFake:
+    """Caixa postal em memória. **Nenhuma conexão SMTP é aberta.**"""
+
+    def __init__(self) -> None:
+        self.enviadas: list[tuple[str, str, str]] = []
+
+    def enviar(self, destinatario: str, assunto: str, corpo: str) -> None:
+        self.enviadas.append((destinatario, assunto, corpo))
+
+
+class CanalEmailComDestinatarioFixo(CanalEmail):
+    """`CanalEmail` de verdade com o destinatário fixado pelo teste.
+
+    Template, entrega e tradução de erro continuam sendo os de produção; só a
+    resolução por papel é substituída, e pela razão de isolamento explicada na
+    docstring do módulo. A resolução real é exercitada em
+    `test_email_por_papel_*`.
+    """
+
+    def __init__(self, *, provider: ProviderEmailFake, destinatarios: list[Destinatario]) -> None:
+        super().__init__(habilitado=True, provider=provider)
+        self._fixos = destinatarios
+
+    def destinatarios(
+        self, session: Session, settings: Settings, tipo: TipoAlerta
+    ) -> list[Destinatario]:
+        return list(self._fixos)
+
+
+def _canais(
+    provider: ProviderFake | None = None,
+    *,
+    email: CanalEmail | None = None,
+    whatsapp_habilitado: bool = True,
+) -> list[CanalAlerta]:
+    """Os canais que os testes de despacho injetam no lugar de `construir_canais`.
+
+    Devolve **sempre os dois**, como `construir_canais` faz em produção: um
+    canal ausente da lista sumiria do resumo, e o resumo tem de responder por
+    todos. Sem `email=`, o de e-mail entra no estado de produção padrão —
+    desligado por configuração e sem credencial —, que é o que a maioria destes
+    testes exercita.
+    """
+    canais: list[CanalAlerta] = [CanalWhatsApp(habilitado=whatsapp_habilitado, provider=provider)]
+    canais.append(email if email is not None else CanalEmail(habilitado=False, provider=None))
+    return canais
 
 
 class ProviderQueExplode:
@@ -140,6 +233,9 @@ def _com_alertas(settings: Settings, **overrides: object) -> Settings:
         "api_keys": TEST_API_KEY,
         "uazapi_base_url": BASE_URL_FALSA,
         "uazapi_token": TOKEN_FALSO,
+        # Explícito, e não herdado do default: estes testes falam do canal de
+        # WhatsApp, e o teste que liga o e-mail o diz na própria chamada.
+        "alertas_canais": Canal.WHATSAPP.value,
         "alertas_destinatarios": json.dumps({tipo.value: [DESTINATARIO_A] for tipo in TipoAlerta}),
     }
     base.update(overrides)
@@ -154,12 +250,20 @@ def sessao() -> Iterator[Session]:
 
 @pytest.fixture(autouse=True)
 def limpar_alertas(settings: Settings) -> Iterator[None]:
-    """Apaga as linhas de `alertas_enviados` deste teste, inclusive as do gancho."""
+    """Apaga as linhas de `alertas_enviados` deste teste, inclusive as do gancho.
+
+    Duas condições, e a segunda entrou com o canal de e-mail: o destinatário
+    deixou de ser sempre um dos dois telefones conhecidos, então o assunto
+    (`chave`, marcada com `MARCA`) é o que acha as linhas do canal novo.
+    """
     yield
     with get_sessionmaker()() as session:
         session.execute(
-            text("delete from alertas_enviados where destinatario = any(:numeros)"),
-            {"numeros": list(NUMEROS_DO_TESTE)},
+            text(
+                "delete from alertas_enviados "
+                "where destinatario = any(:numeros) or chave like :prefixo"
+            ),
+            {"numeros": list(NUMEROS_DO_TESTE), "prefixo": f"{PREFIXO_CHAVE}%"},
         )
         session.commit()
 
@@ -334,7 +438,7 @@ def api(settings: Settings) -> Iterator[TestClient]:
     app.dependency_overrides[get_settings] = lambda: _com_alertas(
         settings, alertas_destinatarios=""
     )
-    app.dependency_overrides[obter_provider] = lambda: ProviderFake()
+    app.dependency_overrides[obter_canais] = lambda: _canais(ProviderFake())
     try:
         yield TestClient(app)
     finally:
@@ -472,7 +576,7 @@ def test_envio_grava_linha_enviada_com_a_mensagem_exata_que_o_gateway_recebeu(
         sessao, settings, documento_id=cenario.critico.id
     )
 
-    resumo = despachar(sessao, _com_alertas(settings), provider, alertas)
+    resumo = despachar(sessao, _com_alertas(settings), _canais(provider), alertas)
 
     assert resumo.enviados == 1
     assert resumo.provider_configurado is True
@@ -491,11 +595,11 @@ def test_cooldown_suprime_em_silencio_sem_gravar_linha_nova(
 ) -> None:
     """Duas varreduras seguidas avisam uma vez — e a segunda não polui a tabela."""
     provider = ProviderFake()
-    alertas = [_alerta_de_teste("documento:cooldown")]
+    alertas = [_alerta_de_teste(_chave("cooldown"))]
     resolvido = _com_alertas(settings)
 
-    primeiro = despachar(sessao, resolvido, provider, alertas)
-    segundo = despachar(sessao, resolvido, provider, alertas)
+    primeiro = despachar(sessao, resolvido, _canais(provider), alertas)
+    segundo = despachar(sessao, resolvido, _canais(provider), alertas)
 
     assert primeiro.enviados == 1
     assert segundo.enviados == 0
@@ -512,9 +616,9 @@ def test_rate_limit_grava_linha_suprimida_com_o_motivo(
     """Esta supressão é anômala: alguém precisa poder descobrir que perdeu alerta."""
     provider = ProviderFake()
     resolvido = _com_alertas(settings, alertas_max_por_hora_por_destinatario=1)
-    alertas = [_alerta_de_teste("documento:primeiro"), _alerta_de_teste("documento:segundo")]
+    alertas = [_alerta_de_teste(_chave("primeiro")), _alerta_de_teste(_chave("segundo"))]
 
-    resumo = despachar(sessao, resolvido, provider, alertas)
+    resumo = despachar(sessao, resolvido, _canais(provider), alertas)
 
     assert resumo.enviados == 1
     assert resumo.suprimidos == 1
@@ -537,7 +641,7 @@ def test_falha_de_envio_registra_e_nao_interrompe_o_proximo_destinatario(
         ),
     )
 
-    resumo = despachar(sessao, resolvido, provider, [_alerta_de_teste("documento:falha")])
+    resumo = despachar(sessao, resolvido, _canais(provider), [_alerta_de_teste(_chave("falha"))])
 
     assert resumo.falhas == 1
     assert resumo.enviados == 1
@@ -554,7 +658,10 @@ def test_sem_provider_configurado_nada_e_enviado_nem_gravado(
     sessao: Session, settings: Settings, cenario: Cenario
 ) -> None:
     resumo = despachar(
-        sessao, _com_alertas(settings), None, [_alerta_de_teste("documento:sem-provider")]
+        sessao,
+        _com_alertas(settings),
+        _canais(provider=None),
+        [_alerta_de_teste(_chave("sem-credencial"))],
     )
 
     assert resumo.provider_configurado is False
@@ -671,7 +778,7 @@ def test_varredura_com_destinatario_invalido_responde_422_dizendo_o_que_conserta
     app.dependency_overrides[get_settings] = lambda: _com_alertas(
         settings, alertas_destinatarios=json.dumps({"deadline_competencias": ["5521999999999"]})
     )
-    app.dependency_overrides[obter_provider] = lambda: ProviderFake()
+    app.dependency_overrides[obter_canais] = lambda: _canais(ProviderFake())
     try:
         resposta = TestClient(app).post("/api/alertas/varredura", headers=AUTH_HEADERS)
     finally:
@@ -695,6 +802,7 @@ def test_listar_alertas_pagina_filtra_e_ordena_do_mais_recente_para_o_mais_antig
         sessao.add(
             AlertaEnviado(
                 tipo=tipo.value,
+                canal=Canal.WHATSAPP.value,
                 chave=f"documento:{cenario.critico.id}",
                 destinatario=DESTINATARIO_A,
                 mensagem=f"mensagem {indice}",
@@ -741,7 +849,7 @@ def test_gancho_que_explode_nao_impede_a_classificacao_de_commitar(
     de `EnvioError`.
     """
     monkeypatch.setattr(hooks, "get_settings", lambda: _com_alertas(settings))
-    monkeypatch.setattr(hooks, "get_provider", lambda _settings: ProviderQueExplode())
+    monkeypatch.setattr(hooks, "construir_canais", lambda _settings: _canais(ProviderQueExplode()))
     documento = Documento(
         operadora_id=cenario.operadora.id,
         paciente_id=cenario.paciente.id,
@@ -795,7 +903,7 @@ def test_gancho_desligado_nao_envia_nada(
         "get_settings",
         lambda: _com_alertas(settings, alertas_hook_inline_habilitado=False),
     )
-    monkeypatch.setattr(hooks, "get_provider", lambda _settings: provider)
+    monkeypatch.setattr(hooks, "construir_canais", lambda _settings: _canais(provider))
 
     hooks.notificar_classificacao(cenario.critico.id)
 
@@ -811,7 +919,7 @@ def test_gancho_habilitado_notifica_o_documento_critico(
 ) -> None:
     provider = ProviderFake()
     monkeypatch.setattr(hooks, "get_settings", lambda: _com_alertas(settings))
-    monkeypatch.setattr(hooks, "get_provider", lambda _settings: provider)
+    monkeypatch.setattr(hooks, "construir_canais", lambda _settings: _canais(provider))
 
     hooks.notificar_classificacao(cenario.critico.id)
 
@@ -819,3 +927,549 @@ def test_gancho_habilitado_notifica_o_documento_critico(
     (linha,) = _linhas(sessao, DESTINATARIO_A)
     assert linha.status == StatusAlerta.ENVIADO.value
     assert linha.documento_id == cenario.critico.id
+
+
+# --- ADR 0006: dois canais ------------------------------------------------------
+
+
+@pytest.fixture
+def pessoas(sessao: Session) -> Iterator[dict[str, Usuario]]:
+    """Um coordenador ativo, um coordenador desativado e um gestor, só deste teste.
+
+    O teardown apaga as linhas de `alertas_enviados` que apontam para eles
+    **antes** dos próprios usuários: `alertas_enviados.usuario_id` é FK, e a
+    ordem inversa deixaria o `delete from usuarios` bater na constraint.
+    """
+    criados = {
+        "coordenador": Usuario(
+            nome="Coordenação Teste",
+            email=f"coord-{uuid.uuid4()}@teste.local",
+            senha_hash=senhas.gerar_hash("senha-de-teste-longa"),
+            papel=Papel.COORDENADOR.value,
+            ativo=True,
+        ),
+        "coordenador_desativado": Usuario(
+            nome="Coordenação Que Saiu",
+            email=f"saiu-{uuid.uuid4()}@teste.local",
+            senha_hash=senhas.gerar_hash("senha-de-teste-longa"),
+            papel=Papel.COORDENADOR.value,
+            ativo=False,
+        ),
+        "gestor": Usuario(
+            nome="Gestão Teste",
+            email=f"gestao-{uuid.uuid4()}@teste.local",
+            senha_hash=senhas.gerar_hash("senha-de-teste-longa"),
+            papel=Papel.GESTOR.value,
+            ativo=True,
+        ),
+    }
+    for usuario in criados.values():
+        sessao.add(usuario)
+    sessao.commit()
+    ids = [usuario.id for usuario in criados.values()]
+
+    yield criados
+
+    with get_sessionmaker()() as limpeza:
+        limpeza.execute(
+            text("delete from alertas_enviados where usuario_id = any(:ids)"), {"ids": ids}
+        )
+        limpeza.execute(text("delete from usuarios where id = any(:ids)"), {"ids": ids})
+        limpeza.commit()
+
+
+def _destinatario(usuario: Usuario) -> Destinatario:
+    return Destinatario(endereco=usuario.email, usuario_id=usuario.id)
+
+
+def _canal_email(
+    destinatarios: list[Destinatario],
+) -> tuple[ProviderEmailFake, CanalEmailComDestinatarioFixo]:
+    provider = ProviderEmailFake()
+    return provider, CanalEmailComDestinatarioFixo(provider=provider, destinatarios=destinatarios)
+
+
+def _linhas_de(sessao: Session, chave: str) -> list[AlertaEnviado]:
+    sessao.expire_all()
+    return list(
+        sessao.scalars(
+            select(AlertaEnviado).where(AlertaEnviado.chave == chave).order_by(AlertaEnviado.canal)
+        ).all()
+    )
+
+
+def test_alerta_sai_pelos_dois_canais_com_uma_linha_por_canal(
+    sessao: Session, settings: Settings, cenario: Cenario, pessoas: dict[str, Usuario]
+) -> None:
+    """Critério 1: dois canais ligados e com credencial = dois envios, duas linhas
+    distinguíveis. Não é fallback — é o comportamento desejado (ADR 0006)."""
+    coordenador = pessoas["coordenador"]
+    whatsapp = ProviderFake()
+    email, canal_email = _canal_email([_destinatario(coordenador)])
+    chave = _chave("dois-canais")
+
+    resumo = despachar(
+        sessao,
+        _com_alertas(settings, alertas_canais="whatsapp,email"),
+        _canais(whatsapp, email=canal_email),
+        [_alerta_de_teste(chave)],
+    )
+
+    assert resumo.enviados == 2
+    assert [destinatario for destinatario, _ in whatsapp.enviadas] == [DESTINATARIO_A]
+    assert [destinatario for destinatario, _, _ in email.enviadas] == [coordenador.email]
+
+    por_canal = {linha.canal: linha for linha in _linhas_de(sessao, chave)}
+    assert set(por_canal) == {Canal.WHATSAPP.value, Canal.EMAIL.value}
+    assert por_canal[Canal.WHATSAPP.value].destinatario == DESTINATARIO_A
+    assert por_canal[Canal.WHATSAPP.value].usuario_id is None
+    assert por_canal[Canal.EMAIL.value].destinatario == coordenador.email
+    assert por_canal[Canal.EMAIL.value].usuario_id == coordenador.id
+    for linha in por_canal.values():
+        assert linha.status == StatusAlerta.ENVIADO.value
+
+
+def test_o_email_chega_sem_asterisco_literal_e_com_assunto_proprio(
+    sessao: Session, settings: Settings, cenario: Cenario, pessoas: dict[str, Usuario]
+) -> None:
+    """Critério 4, do lado do despacho: o texto que o gateway de e-mail recebe é
+    texto puro e tem assunto; o do WhatsApp continua com emoji e `*negrito*`."""
+    coordenador = pessoas["coordenador"]
+    whatsapp = ProviderFake()
+    email, canal_email = _canal_email([_destinatario(coordenador)])
+
+    despachar(
+        sessao,
+        _com_alertas(settings, alertas_canais="whatsapp,email"),
+        _canais(whatsapp, email=canal_email),
+        [_alerta_de_teste(_chave("texto"))],
+    )
+
+    (_, texto_whatsapp) = whatsapp.enviadas[0]
+    (_, assunto, corpo) = email.enviadas[0]
+    assert texto_whatsapp.startswith("🚨 *Pendência crítica*")
+    assert assunto == "Pendência crítica — Operadora Alertas"
+    assert "*" not in assunto
+    assert "*" not in corpo
+    assert "🚨" not in corpo
+    # O corpo é o mesmo conteúdo, sem a marcação: os dados continuam lá.
+    assert "Operadora: Operadora Alertas" in corpo
+    assert "carimbo ausente" in corpo
+
+
+def test_o_log_do_email_guarda_o_assunto_junto_com_o_corpo(
+    sessao: Session, settings: Settings, cenario: Cenario, pessoas: dict[str, Usuario]
+) -> None:
+    """Auditar um envio é saber o que foi dito, e no e-mail o assunto é parte
+    disso — omiti-lo deixaria o log respondendo pela metade."""
+    coordenador = pessoas["coordenador"]
+    email, canal_email = _canal_email([_destinatario(coordenador)])
+    chave = _chave("log-com-assunto")
+
+    despachar(
+        sessao,
+        _com_alertas(settings, alertas_canais="email"),
+        _canais(provider=None, email=canal_email, whatsapp_habilitado=False),
+        [_alerta_de_teste(chave)],
+    )
+
+    (linha,) = _linhas_de(sessao, chave)
+    (_, assunto, corpo) = email.enviadas[0]
+    assert linha.mensagem == f"Assunto: {assunto}\n\n{corpo}"
+
+
+def test_canal_habilitado_sem_credencial_nao_envia_nao_estoura_e_aparece_no_resumo(
+    sessao: Session, settings: Settings, cenario: Cenario
+) -> None:
+    """Critério 2. Ligar o e-mail sem SMTP é o mesmo modo de falha que a
+    recuperação de senha já tem — e lá a única pista é uma linha de log."""
+    chave = _chave("sem-credencial-email")
+
+    resumo = despachar(
+        sessao,
+        _com_alertas(settings, alertas_canais="whatsapp,email"),
+        [
+            CanalWhatsApp(habilitado=True, provider=ProviderFake()),
+            CanalEmail(habilitado=True, provider=None),
+        ],
+        [_alerta_de_teste(chave)],
+    )
+
+    assert resumo.enviados == 1
+    assert resumo.falhas == 0
+    assert resumo.canais[Canal.EMAIL.value].habilitado is True
+    assert resumo.canais[Canal.EMAIL.value].disponivel is False
+    assert [linha.canal for linha in _linhas_de(sessao, chave)] == [Canal.WHATSAPP.value]
+
+
+def test_canal_desabilitado_nao_envia_nem_grava_linha(
+    sessao: Session, settings: Settings, cenario: Cenario, pessoas: dict[str, Usuario]
+) -> None:
+    """Critério 3. Desligado é diferente de sem credencial, e o resumo diz qual."""
+    email, canal_email = _canal_email([_destinatario(pessoas["coordenador"])])
+    canal_email.habilitado = False
+    chave = _chave("email-desligado")
+
+    resumo = despachar(
+        sessao,
+        _com_alertas(settings, alertas_canais="whatsapp"),
+        _canais(ProviderFake(), email=canal_email),
+        [_alerta_de_teste(chave)],
+    )
+
+    assert email.enviadas == []
+    assert resumo.canais[Canal.EMAIL.value].habilitado is False
+    assert resumo.canais[Canal.EMAIL.value].disponivel is True
+    assert [linha.canal for linha in _linhas_de(sessao, chave)] == [Canal.WHATSAPP.value]
+
+
+def test_nenhum_canal_ligado_nao_envia_nada_e_o_resumo_ainda_conta_o_detectado(
+    sessao: Session, settings: Settings, cenario: Cenario
+) -> None:
+    chave = _chave("tudo-desligado")
+
+    resumo = despachar(
+        sessao,
+        _com_alertas(settings, alertas_canais=""),
+        [
+            CanalWhatsApp(habilitado=False, provider=ProviderFake()),
+            CanalEmail(habilitado=False, provider=ProviderEmailFake()),
+        ],
+        [_alerta_de_teste(chave)],
+    )
+
+    assert resumo.detectados == 1
+    assert resumo.enviados == 0
+    assert resumo.provider_configurado is False
+    assert _linhas_de(sessao, chave) == []
+
+
+def test_falha_de_um_canal_nao_impede_o_outro(
+    sessao: Session, settings: Settings, cenario: Cenario, pessoas: dict[str, Usuario]
+) -> None:
+    """Um gateway fora do ar não pode silenciar o canal que está inteiro — é o
+    argumento que justifica haver dois."""
+    coordenador = pessoas["coordenador"]
+    whatsapp = ProviderFake(falhar_para={DESTINATARIO_A})
+    _, canal_email = _canal_email([_destinatario(coordenador)])
+    chave = _chave("falha-parcial")
+
+    resumo = despachar(
+        sessao,
+        _com_alertas(settings, alertas_canais="whatsapp,email"),
+        _canais(whatsapp, email=canal_email),
+        [_alerta_de_teste(chave)],
+    )
+
+    assert resumo.falhas == 1
+    assert resumo.enviados == 1
+    por_canal = {linha.canal: linha for linha in _linhas_de(sessao, chave)}
+    assert por_canal[Canal.WHATSAPP.value].status == StatusAlerta.FALHA.value
+    assert por_canal[Canal.EMAIL.value].status == StatusAlerta.ENVIADO.value
+
+
+# --- o anti-bombardeio conta a pessoa, não o endereço ---------------------------
+
+
+def test_o_teto_por_hora_nao_dobra_ao_ligar_o_segundo_canal(
+    sessao: Session, settings: Settings, cenario: Cenario, pessoas: dict[str, Usuario]
+) -> None:
+    """**Critério 6, o que justifica a migration.**
+
+    Duas linhas em endereços diferentes da MESMA pessoa somam num teto só. Se o
+    rate limit continuasse contando por endereço, ligar o segundo canal daria a
+    quem recebe nos dois o dobro de mensagens por hora — sem ninguém pedir, e
+    sem erro nenhum aparecer.
+
+    A linha semeada é de WhatsApp e **atribuída à pessoa**. Hoje o telefone do
+    `.env` não tem dono (não há telefone em `usuarios`, ADR 0006 §3), então essa
+    forma é a que a segunda parte do ADR e o dia em que o cadastro tiver
+    telefone produzem. O que este teste fixa é a REGRA DE CONTAGEM — que é
+    exatamente o que a coluna `usuario_id` existe para permitir.
+
+    O contraste está na mesma passada: a linha de `sem_dono` tem
+    `usuario_id NULL`, como toda linha de telefone avulso, e por isso **não**
+    entra no teto de ninguém.
+    """
+    com_dono = pessoas["coordenador"]
+    sem_dono = pessoas["gestor"]
+    agora = datetime.now(UTC)
+    for usuario_id in (com_dono.id, None):
+        sessao.add(
+            AlertaEnviado(
+                tipo=TipoAlerta.DOCUMENTO_INCOMPLETO_CRITICO.value,
+                canal=Canal.WHATSAPP.value,
+                chave=_chave("aviso-anterior"),
+                destinatario=DESTINATARIO_B,
+                usuario_id=usuario_id,
+                mensagem="aviso que já saiu nesta hora",
+                status=StatusAlerta.ENVIADO.value,
+                created_at=agora - timedelta(minutes=5),
+            )
+        )
+    sessao.commit()
+
+    email, canal_email = _canal_email([_destinatario(com_dono), _destinatario(sem_dono)])
+    chave = _chave("teto")
+
+    resumo = despachar(
+        sessao,
+        _com_alertas(settings, alertas_canais="email", alertas_max_por_hora_por_destinatario=1),
+        _canais(provider=None, email=canal_email, whatsapp_habilitado=False),
+        [_alerta_de_teste(chave)],
+    )
+
+    assert resumo.enviados == 1
+    assert resumo.suprimidos == 1
+    # Quem já tinha uma linha atribuída a si nesta hora não recebe a segunda.
+    assert [destinatario for destinatario, _, _ in email.enviadas] == [sem_dono.email]
+    por_endereco = {linha.destinatario: linha for linha in _linhas_de(sessao, chave)}
+    assert por_endereco[com_dono.email].status == StatusAlerta.SUPRIMIDO.value
+    assert por_endereco[com_dono.email].detalhe is not None
+    assert "rate limit" in por_endereco[com_dono.email].detalhe
+    assert por_endereco[sem_dono.email].status == StatusAlerta.ENVIADO.value
+
+
+def test_o_teto_segue_a_pessoa_quando_o_endereco_dela_muda(
+    sessao: Session, settings: Settings, cenario: Cenario, pessoas: dict[str, Usuario]
+) -> None:
+    """A mesma regra, sem nenhuma linha semeada: o e-mail de alguém é editável
+    (`PATCH /api/usuarios/{id}`), e duas linhas em endereços diferentes dentro
+    da hora continuam sendo a mesma pessoa recebendo duas mensagens."""
+    coordenador = pessoas["coordenador"]
+    endereco_antigo = coordenador.email
+    endereco_novo = f"novo-{uuid.uuid4()}@teste.local"
+    resolvido = _com_alertas(
+        settings, alertas_canais="email", alertas_max_por_hora_por_destinatario=1
+    )
+
+    _, canal_antigo = _canal_email(
+        [Destinatario(endereco=endereco_antigo, usuario_id=coordenador.id)]
+    )
+    primeiro = despachar(
+        sessao,
+        resolvido,
+        _canais(provider=None, email=canal_antigo, whatsapp_habilitado=False),
+        [_alerta_de_teste(_chave("antes-da-troca"))],
+    )
+
+    email_novo, canal_novo = _canal_email(
+        [Destinatario(endereco=endereco_novo, usuario_id=coordenador.id)]
+    )
+    segundo = despachar(
+        sessao,
+        resolvido,
+        _canais(provider=None, email=canal_novo, whatsapp_habilitado=False),
+        [_alerta_de_teste(_chave("depois-da-troca"))],
+    )
+
+    assert primeiro.enviados == 1
+    assert segundo.enviados == 0
+    assert segundo.suprimidos == 1
+    assert email_novo.enviadas == []
+
+
+def test_o_cooldown_deixa_o_mesmo_aviso_sair_nos_dois_canais_e_uma_vez_em_cada(
+    sessao: Session, settings: Settings, cenario: Cenario, pessoas: dict[str, Usuario]
+) -> None:
+    """Critério 7. O cooldown continua por **destinatário**: dois canais são dois
+    endereços, e o mesmo aviso sair nos dois é o desejado — o que ele impede é a
+    segunda varredura repetir o aviso no mesmo canal."""
+    coordenador = pessoas["coordenador"]
+    whatsapp = ProviderFake()
+    email, canal_email = _canal_email([_destinatario(coordenador)])
+    resolvido = _com_alertas(settings, alertas_canais="whatsapp,email")
+    chave = _chave("cooldown-dois-canais")
+    alertas = [_alerta_de_teste(chave)]
+
+    primeiro = despachar(sessao, resolvido, _canais(whatsapp, email=canal_email), alertas)
+    segundo = despachar(sessao, resolvido, _canais(whatsapp, email=canal_email), alertas)
+
+    assert primeiro.enviados == 2
+    assert segundo.enviados == 0
+    assert segundo.suprimidos == 2
+    assert len(whatsapp.enviadas) == 1
+    assert len(email.enviadas) == 1
+    # A supressão por cooldown não grava linha: continuam as duas do primeiro.
+    assert len(_linhas_de(sessao, chave)) == 2
+
+
+# --- destinatário de e-mail por papel ------------------------------------------
+
+
+def test_email_por_papel_traz_a_conta_ativa_e_nunca_a_desativada(
+    sessao: Session, pessoas: dict[str, Usuario]
+) -> None:
+    """Critério 5. Desativar é o caminho de saída de alguém da operação; continuar
+    mandando pendência de paciente para quem saiu é vazamento, não só ruído.
+
+    Consulta só de leitura: nada é enviado e nenhuma linha é gravada — ver a
+    docstring do módulo para por que o despacho por papel não roda aqui.
+    """
+    encontrados = repository.usuarios_ativos_por_papel(sessao, papeis=[Papel.COORDENADOR])
+
+    enderecos = {destinatario.endereco for destinatario in encontrados}
+    assert pessoas["coordenador"].email in enderecos
+    assert pessoas["coordenador_desativado"].email not in enderecos
+    assert pessoas["gestor"].email not in enderecos
+    (meu,) = [d for d in encontrados if d.endereco == pessoas["coordenador"].email]
+    assert meu.usuario_id == pessoas["coordenador"].id
+
+
+def test_email_por_papel_sem_papel_nenhum_devolve_vazio(sessao: Session) -> None:
+    """É a mesma lista vazia que um papel sem nenhuma conta ativa produz — e o
+    banco é compartilhado, então "papel sem ninguém" não é forçável aqui."""
+    assert repository.usuarios_ativos_por_papel(sessao, papeis=[]) == []
+
+
+def test_o_canal_de_email_real_resolve_o_papel_configurado_para_cada_tipo(
+    sessao: Session, settings: Settings, pessoas: dict[str, Usuario]
+) -> None:
+    """O `CanalEmail` de produção, sem destinatário fixado — só leitura.
+
+    Confere o default declarado: item individual vai ao coordenador, e o gestor
+    entra apenas em `volume_anormal`, o único sinal agregado dos quatro.
+    """
+    canal = CanalEmail(habilitado=True, provider=ProviderEmailFake())
+    resolvido = _com_alertas(settings, alertas_canais="email")
+
+    individual = {
+        d.endereco
+        for d in canal.destinatarios(sessao, resolvido, TipoAlerta.DOCUMENTO_INCOMPLETO_CRITICO)
+    }
+    agregado = {
+        d.endereco for d in canal.destinatarios(sessao, resolvido, TipoAlerta.VOLUME_ANORMAL)
+    }
+
+    assert pessoas["coordenador"].email in individual
+    assert pessoas["gestor"].email not in individual
+    assert pessoas["coordenador"].email in agregado
+    assert pessoas["gestor"].email in agregado
+    assert pessoas["coordenador_desativado"].email not in agregado
+
+
+def test_tipo_sem_destinatario_no_canal_de_email_nao_derruba_a_varredura(
+    sessao: Session, settings: Settings, cenario: Cenario
+) -> None:
+    """Critério 5, última parte. Papel sem nenhuma conta ativa produz a mesma
+    lista vazia que uma configuração explícita de lista vazia: o tipo
+    simplesmente não sai por esse canal, e a varredura segue para os outros."""
+    whatsapp = ProviderFake()
+    canal_email = CanalEmail(habilitado=True, provider=ProviderEmailFake())
+    chave = _chave("papel-vazio")
+
+    resumo = despachar(
+        sessao,
+        _com_alertas(
+            settings,
+            alertas_canais="whatsapp,email",
+            alertas_papeis_email=json.dumps({TipoAlerta.DOCUMENTO_INCOMPLETO_CRITICO.value: []}),
+        ),
+        _canais(whatsapp, email=canal_email),
+        [_alerta_de_teste(chave)],
+    )
+
+    assert resumo.enviados == 1
+    assert resumo.falhas == 0
+    assert [linha.canal for linha in _linhas_de(sessao, chave)] == [Canal.WHATSAPP.value]
+
+
+# --- resumo da varredura --------------------------------------------------------
+
+
+def test_o_resumo_do_endpoint_traz_os_dois_estados_de_cada_canal(
+    api: TestClient, cenario: Cenario
+) -> None:
+    resposta = api.post("/api/alertas/varredura", headers=AUTH_HEADERS)
+
+    canais = resposta.json()["canais"]
+    assert set(canais) == {canal.value for canal in Canal}
+    assert canais[Canal.WHATSAPP.value] == {"habilitado": True, "disponivel": True}
+    assert canais[Canal.EMAIL.value] == {"habilitado": False, "disponivel": False}
+
+
+def test_o_log_do_endpoint_expoe_o_canal_de_cada_linha(
+    api: TestClient, sessao: Session, cenario: Cenario
+) -> None:
+    """Sem `canal` na resposta, duas linhas do mesmo aviso para a mesma pessoa
+    seriam indistinguíveis — e é isso que o segundo canal produz de propósito."""
+    sessao.add(
+        AlertaEnviado(
+            tipo=TipoAlerta.PENDENCIA_PARADA.value,
+            canal=Canal.EMAIL.value,
+            chave=_chave("log-canal"),
+            destinatario="alguem@teste.local",
+            mensagem="Assunto: x\n\ny",
+            status=StatusAlerta.ENVIADO.value,
+            documento_id=cenario.critico.id,
+        )
+    )
+    sessao.commit()
+
+    corpo = api.get(f"/api/alertas?documento_id={cenario.critico.id}", headers=AUTH_HEADERS).json()
+
+    assert [item["canal"] for item in corpo["data"]] == [Canal.EMAIL.value]
+
+
+def test_mensagem_renderizada_do_email_vira_o_registro_com_assunto() -> None:
+    """Contrato de `MensagemAlerta.para_registro`, exercitado sem banco."""
+    assert MensagemAlerta(corpo="só texto").para_registro() == "só texto"
+    assert (
+        MensagemAlerta(assunto="Prazo", corpo="corpo").para_registro() == "Assunto: Prazo\n\ncorpo"
+    )
+
+
+# --- configuração quebrada tem de chegar a quem opera --------------------------
+
+
+def test_canal_invalido_responde_422_e_nao_500(settings: Settings, cenario: Cenario) -> None:
+    """`ALERTAS_CANAIS` é lido na **dependency**, que roda antes do corpo do
+    handler — o `try` de `varredura` nunca a veria. Sem o `except` lá, um typo
+    na variável virava 500 ("Internal Server Error") em vez do 422 que diz o
+    que consertar, e quem opera ficava sem pista nenhuma."""
+    app.dependency_overrides[get_settings] = lambda: _com_alertas(
+        settings, alertas_canais="whatsapp,telegrama"
+    )
+    try:
+        resposta = TestClient(app).post("/api/alertas/varredura", headers=AUTH_HEADERS)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resposta.status_code == 422
+    mensagem = resposta.json()["error"]["mensagem"]
+    assert "telegrama" in mensagem
+    for canal in Canal:
+        assert canal.value in mensagem
+
+
+def test_papel_invalido_responde_422_dizendo_o_que_consertar(
+    settings: Settings, cenario: Cenario
+) -> None:
+    app.dependency_overrides[get_settings] = lambda: _com_alertas(
+        settings,
+        alertas_papeis_email=json.dumps({TipoAlerta.VOLUME_ANORMAL.value: ["diretor"]}),
+    )
+    app.dependency_overrides[obter_canais] = lambda: _canais(ProviderFake())
+    try:
+        resposta = TestClient(app).post("/api/alertas/varredura", headers=AUTH_HEADERS)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resposta.status_code == 422
+    assert "diretor" in resposta.json()["error"]["mensagem"]
+
+
+def test_o_cron_sai_com_codigo_1_e_mensagem_quando_o_canal_nao_existe(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Código 1 é a única situação em que alguém precisa acordar: "a configuração
+    está quebrada e ninguém está sendo avisado". Um traceback no lugar dele daria
+    o mesmo código de saída sem a mensagem que diz o que consertar."""
+    monkeypatch.setattr(
+        scan, "get_settings", lambda: _com_alertas(settings, alertas_canais="telegrama")
+    )
+
+    codigo = scan.main()
+
+    assert codigo == 1
+    assert "telegrama" in capsys.readouterr().err
