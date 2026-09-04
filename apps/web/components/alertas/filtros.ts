@@ -1,4 +1,4 @@
-import type { StatusAlerta, TipoAlerta } from "@homecareos/contracts";
+import type { CanalAlerta, StatusAlerta, TipoAlerta } from "@homecareos/contracts";
 
 /**
  * Os filtros do log de alertas vivem na **URL**, não em estado de cliente — o
@@ -74,6 +74,16 @@ export const VARIANTE_DE_STATUS: Record<StatusAlerta, string> = {
  * `documento_incompleto_v2` sabe que existe algo novo; quem vê um espaço vazio
  * não sabe de nada.
  */
+
+export const ROTULO_DE_CANAL: Record<CanalAlerta, string> = {
+  whatsapp: "WhatsApp",
+  email: "E-mail",
+};
+
+/** Mesmo fallback dos outros rótulos: canal novo aparece cru, não some. */
+export function rotuloDoCanal(canal: string): string {
+  return ROTULO_DE_CANAL[canal as CanalAlerta] ?? canal;
+}
 
 export function rotuloDoTipo(tipo: string): string {
   return ROTULO_DE_TIPO[tipo as TipoAlerta] ?? tipo;

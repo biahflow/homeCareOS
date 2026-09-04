@@ -994,12 +994,12 @@ export async function atualizarUsuario(
   return (await response.json()) as UsuarioOut;
 }
 
-/* Alertas de WhatsApp — `/api/alertas` (issue #9). */
+/* Alertas — `/api/alertas` (issue #9; segundo canal no ADR 0006). */
 
 const CAMINHO_ALERTAS = "/api/alertas";
 
 /**
- * `GET /api/alertas`: a página atual do log de notificações de WhatsApp.
+ * `GET /api/alertas`: a página atual do log de notificações enviadas.
  *
  * **O router inteiro exige `coordenador` ou `gestor`** (`main.py` monta
  * `alertas_router` com `exigir_papel(Papel.COORDENADOR, Papel.GESTOR)`, desde a

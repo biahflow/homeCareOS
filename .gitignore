@@ -20,7 +20,13 @@ next-env.d.ts
 
 # Worktrees que o harness de agente cria dentro do repo. Sem esta linha um
 # `git add .` varre o worktree inteiro de uma tarefa que ainda está rodando.
-.claude/worktrees/
+#
+# O `**/` não é redundante: um padrão com barra no meio é ancorado ao diretório
+# do próprio `.gitignore`, então `.claude/worktrees/` sozinho cobria só a raiz.
+# Um worktree criado com o shell dentro de `apps/api/` ia parar em
+# `apps/api/.claude/worktrees/` e ficava rastreado — que é o caso que esta linha
+# passou a cobrir.
+**/.claude/worktrees/
 
 # Editores e SO
 .DS_Store
