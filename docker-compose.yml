@@ -63,6 +63,7 @@ services:
       - "${API_PORT:-8001}:8000"
     volumes:
       - ./apps/api/src:/app/src
+      - ./apps/api/uv.lock:/app/uv.lock:ro
     command: uvicorn homecareos.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       postgres:
@@ -83,6 +84,14 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+psycopg://homecareos:homecareos@postgres:5432/homecareos
+      # Mesma razão do comentário de PYTHONPATH no serviço `api`: o pacote é
+      # instalado com `--no-editable` (copiado para dentro do venv), então
+      # sem isto o volume de `src` abaixo não teria efeito nenhum — o
+      # container seguiria rodando a cópia congelada na imagem.
+      PYTHONPATH: /app/src
+    volumes:
+      - ./apps/api/src:/app/src
+      - ./apps/api/uv.lock:/app/uv.lock:ro
     command: alembic upgrade head
     depends_on:
       postgres:
@@ -98,6 +107,10 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://homecareos:homecareos@postgres:5432/homecareos
       S3_ENDPOINT_URL: http://minio:9000
+      PYTHONPATH: /app/src
+    volumes:
+      - ./apps/api/src:/app/src
+      - ./apps/api/uv.lock:/app/uv.lock:ro
     command: python -m homecareos.seed
     depends_on:
       postgres:
@@ -118,6 +131,10 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+psycopg://homecareos:homecareos@postgres:5432/homecareos
+      PYTHONPATH: /app/src
+    volumes:
+      - ./apps/api/src:/app/src
+      - ./apps/api/uv.lock:/app/uv.lock:ro
     command: python -m homecareos.alerts.scan
     depends_on:
       postgres:

@@ -35,6 +35,15 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/alembic.ini ./
 COPY --from=builder /app/src ./src
 
+# Cópia do uv.lock que o build usou, fora de /app/src (o único caminho que o
+# Compose monta por volume) — é contra ela que o entrypoint compara o uv.lock
+# do projeto para saber se a imagem está desatualizada. Ver docker-entrypoint.sh.
+COPY --from=builder /app/uv.lock ./.image-uv.lock
+
+# Script de entrada depois da cópia do venv, para não invalidar essa camada
+# cara (a mais lenta do build) sempre que o script mudar.
+COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
 # Usuário sem privilégio. A porta é 8000, acima de 1024, então nada aqui
 # precisa de root.
 RUN useradd --system --uid 10001 --shell /usr/sbin/nologin homecareos \
@@ -42,4 +51,5 @@ RUN useradd --system --uid 10001 --shell /usr/sbin/nologin homecareos \
 USER homecareos
 
 EXPOSE 8000
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["uvicorn", "homecareos.main:app", "--host", "0.0.0.0", "--port", "8000"]
