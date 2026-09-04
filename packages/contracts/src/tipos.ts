@@ -35,6 +35,134 @@ export interface UploadParams {
   idempotencyKey: string;
 }
 
+/* Paginação — envelope comum a toda listagem da API. */
+
+/**
+ * Quanto a listagem devolveu e de onde. `total` é o tamanho do conjunto
+ * **filtrado**, não o da tabela: é ele que diz quantas páginas existem para os
+ * filtros em vigor.
+ */
+export interface Paginacao {
+  total: number;
+  limite: number;
+  offset: number;
+}
+
+/**
+ * Envelope de toda listagem paginada (`apps/api/src/homecareos/api/pagination.py`).
+ *
+ * Genérico de propósito: o formato é um só para documentos, pendências e
+ * pacientes, e repeti-lo por endpoint criaria cópias para divergir.
+ *
+ * Paginação é por **deslocamento** (`offset`), não por cursor. A consequência
+ * que quem consome precisa saber: entre duas páginas o conjunto pode mudar
+ * debaixo de quem lê — um item novo empurra os demais para frente e a página
+ * seguinte pode repetir ou pular uma linha. É aceitável aqui (listas filtradas
+ * e ordenadas por coluna simples) e não é defeito da interface.
+ */
+export interface RespostaPaginada<T> {
+  data: T[];
+  paginacao: Paginacao;
+}
+
+/* Pendências — `/api/pendencias`. */
+
+/**
+ * Ciclo de vida de uma pendência: `aberta → em_correcao → resolvida`.
+ *
+ * **Sempre para frente, nunca pulando etapa nem voltando**
+ * (`routers/pendencias.py:_TRANSICOES_VALIDAS`). `resolvida` não transiciona
+ * para lugar nenhum: não existe caminho de volta pela API, e desfazer é
+ * trabalho de quem administra o banco.
+ */
+export type PendenciaStatus = "aberta" | "em_correcao" | "resolvida";
+
+/**
+ * Uma pendência aberta sobre um documento durante a conferência.
+ *
+ * `descricao` e `tipo_problema` descrevem o problema de uma evolução de
+ * prontuário — são dado clínico. Não vão para `console.log`, para query string
+ * nem para mensagem de erro que suba para telemetria.
+ */
+export interface PendenciaItem {
+  id: string;
+  documento_id: string;
+  tipo_problema: string;
+  /** Campo do schema de extração que originou a pendência. Nulo em pendência anterior à classificação automática. */
+  campo: string | null;
+  descricao: string;
+  /** Rótulo legível: pessoa, setor ou fornecedor. O padrão da classificação automática é texto livre. */
+  responsavel: string;
+  /** Nulo enquanto a pendência não foi atribuída a uma pessoa cadastrada — o caso de toda pendência aberta pela classificação. */
+  responsavel_id: string | null;
+  status: PendenciaStatus;
+  /** ISO 8601 com fuso (a API grava `timestamptz`). */
+  deadline: string;
+  created_at: string;
+  /** ISO 8601, ou nulo enquanto a pendência não foi resolvida. */
+  resolved_at: string | null;
+}
+
+/** Filtros de `GET /api/pendencias`. Nenhum deles carrega dado de prontuário. */
+export interface ListarPendenciasParams {
+  status?: PendenciaStatus;
+  /** Data `AAAA-MM-DD`: só pendências com deadline até ela, **dia inteiro incluído**. */
+  deadline?: string;
+  /** Operadora do documento a que a pendência pertence. */
+  operadora_id?: string;
+  /** Itens por página. Padrão 50, máximo 200 (`api/pagination.py`). */
+  limite?: number;
+  offset?: number;
+}
+
+/**
+ * Corpo de `PATCH /api/pendencias/{id}`.
+ *
+ * `responsavel_id` existe na API e **não** está aqui de propósito: não há
+ * router de usuários, então não existe de onde listar pessoas para escolher, e
+ * um id chutado responde 422. A atribuição desta interface usa o texto livre
+ * `responsavel`, que é o que a operação já faz — ela atribui a fornecedor, a
+ * setor e a gente que ainda não tem cadastro. Quando existir cadastro de
+ * usuário via API (débito conhecido da issue #39), este tipo ganha o campo.
+ *
+ * `responsavel` ausente significa **não mexer no responsável atual**; não é o
+ * mesmo que enviá-lo vazio, que sobrescreveria o rótulo por uma string vazia.
+ */
+export interface AtualizarPendenciaParams {
+  status: PendenciaStatus;
+  responsavel?: string;
+}
+
+/** Faixas de vencimento do resumo. Contam apenas pendências **não resolvidas**. */
+export interface FaixasDeDeadline {
+  vencidas: number;
+  proximos_7_dias: number;
+  futuras: number;
+}
+
+/**
+ * Resposta de `GET /api/pendencias/resumo`.
+ *
+ * `por_status` conta **todas** as pendências, inclusive as resolvidas;
+ * `por_faixa_deadline` conta só as que continuam em aberto (`routers/
+ * pendencias.py:resumo_pendencias`). Os dois totais não fecham entre si, e
+ * apresentá-los como se fechassem faria alguém procurar um erro que não existe.
+ */
+export interface ResumoPendencias {
+  por_status: Record<PendenciaStatus, number>;
+  por_faixa_deadline: FaixasDeDeadline;
+}
+
+/* Operadoras — `/api/operadoras`. */
+
+/** Operadora (convênio) atendida pela empresa. Lista pequena, sem paginação. */
+export interface Operadora {
+  id: string;
+  nome: string;
+  codigo: string;
+  created_at: string;
+}
+
 /* Autenticação — `/api/auth` (ADR 0001). */
 
 /** Os três papéis da matriz aprovada no ADR 0001. */
