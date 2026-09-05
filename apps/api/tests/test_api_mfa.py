@@ -19,7 +19,14 @@ anti-replay, que é exatamente o comportamento correto. Pedir o código do passo
 seguinte (`_codigo`, `delta=1`) é o que um usuário de verdade faz: espera trinta
 segundos.
 
-Nenhum teste daqui imprime senha, segredo ou código de recuperação.
+**Todo teste deste módulo roda com a cifra do segredo em repouso LIGADA** (ADR
+0008), pela fixture autouse `cifra_ligada`. A chave vem de uma variável de
+ambiente de verdade, e não de um override de dependency: `db/cifra.py` a resolve
+por `get_settings()` — dentro do SQLAlchemy não há request nem
+`dependency_overrides` por perto —, então um teste que mexesse só no override
+estaria medindo uma configuração que a coluna nunca leria.
+
+Nenhum teste daqui imprime senha, segredo, chave ou código de recuperação.
 """
 
 from __future__ import annotations
@@ -41,7 +48,13 @@ from homecareos.config import Settings, get_settings
 from homecareos.db.models import CodigoRecuperacaoMfa, TentativaLogin, Usuario
 from homecareos.db.session import get_sessionmaker
 from homecareos.main import app
-from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.conftest import (
+    AUTH_HEADERS,
+    TEST_API_KEY,
+    TEST_MFA_SECRET_KEY,
+    TEST_MFA_SECRET_KEY_ANTIGA,
+    configurar_chaves_mfa,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -97,6 +110,19 @@ def api(settings: Settings) -> Iterator[TestClient]:
         app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def cifra_ligada(chave_mfa: str) -> str:
+    """A cifra do segredo em repouso ligada em todo teste deste módulo.
+
+    É `autouse` porque a coluna `usuarios.mfa_secret` recusa gravar sem chave
+    (ADR 0008): sem esta fixture, cada fixture de usuário com MFA quebraria por
+    configuração, e não pelo que o teste quer provar. Quem precisa de outra
+    configuração — nenhuma chave, ou duas — a troca com `configurar_chaves_mfa`
+    dentro do próprio teste.
+    """
+    return chave_mfa
+
+
 @pytest.fixture
 def sessao() -> Iterator[Session]:
     with get_sessionmaker()() as session:
@@ -133,7 +159,7 @@ def _limpar_usuario(session: Session, usuario: Usuario) -> None:
 
 
 @pytest.fixture
-def usuario(sessao: Session) -> Iterator[Usuario]:
+def usuario(sessao: Session, cifra_ligada: str) -> Iterator[Usuario]:
     """Usuário **sem** MFA — o caminho de quem nunca ativou nada."""
     linha = _criar_usuario(sessao)
     yield linha
@@ -141,7 +167,7 @@ def usuario(sessao: Session) -> Iterator[Usuario]:
 
 
 @pytest.fixture
-def usuario_com_mfa(sessao: Session) -> Iterator[tuple[Usuario, str]]:
+def usuario_com_mfa(sessao: Session, cifra_ligada: str) -> Iterator[tuple[Usuario, str]]:
     """Usuário com MFA já ativado, e o segredo dele.
 
     O segredo é plantado direto no banco (em vez de passar por
@@ -832,3 +858,173 @@ def test_desativar_registra_a_falha_em_tentativas_login(
         .where(TentativaLogin.email_tentado == usuario.email, ~TentativaLogin.sucesso)
     )
     assert depois == (antes or 0) + 1
+
+
+# --- 21-26. cifra do segredo em repouso (ADR 0008) ----------------------------
+
+
+def _coluna_crua(sessao: Session, usuario: Usuario) -> str | None:
+    """O que está gravado em `usuarios.mfa_secret`, sem passar pelo ORM.
+
+    Ler pelo model devolveria o segredo já decifrado por `SegredoCifrado` — que
+    é o ponto do tipo, e por isso mesmo não serve para provar que a coluna está
+    cifrada. SQL cru é a única leitura que enxerga o valor de verdade, e é o
+    mesmo `select mfa_secret from usuarios` que alguém com um dump faria.
+    """
+    return sessao.execute(
+        text("select mfa_secret from usuarios where id = :id"), {"id": usuario.id}
+    ).scalar_one()
+
+
+def test_a_coluna_guarda_token_fernet_e_nao_o_segredo_em_claro(
+    api: TestClient, sessao: Session, usuario: Usuario
+) -> None:
+    """Critério de aceite 1: o dump não entrega o segundo fator de ninguém.
+
+    Este é o teste que falharia se alguém trocasse o tipo da coluna de volta por
+    `String` — o resto da suíte continuaria verde, porque tudo o mais fala com o
+    valor já decifrado.
+    """
+    segredo, _ = _ativar_mfa(api, usuario)
+
+    guardado = _coluna_crua(sessao, usuario)
+
+    assert guardado is not None
+    assert guardado.startswith("gAAAAA")
+    assert guardado != segredo
+    assert segredo not in guardado
+
+    # E o código continua enxergando o segredo em claro: a cifra é em repouso,
+    # não uma mudança do que o resto do sistema manipula.
+    sessao.expire(usuario)
+    assert usuario.mfa_secret == segredo
+
+
+def test_o_segredo_da_resposta_de_iniciar_continua_em_claro(
+    api: TestClient, sessao: Session, usuario: Usuario
+) -> None:
+    """A cifra é em REPOUSO, não em trânsito — e não podia ser diferente.
+
+    É este `secret` que a pessoa digita no app autenticador quando o QR code não
+    lê, e é dele que `otpauth_uri` é derivado. Devolver o token Fernet aqui
+    cadastraria no aplicativo um segredo que não gera código nenhum.
+    """
+    assert _login(api, usuario).status_code == 200
+
+    corpo = api.post("/api/auth/mfa/iniciar").json()
+
+    segredo = corpo["secret"]
+    assert not segredo.startswith("gAAAAA")
+    assert segredo in corpo["otpauth_uri"]
+    # O mesmo segredo, cifrado, é o que foi para o banco.
+    guardado = _coluna_crua(sessao, usuario)
+    assert guardado is not None and guardado.startswith("gAAAAA")
+    # E ele funciona de verdade: é o que o aplicativo autenticador vai usar.
+    assert api.post("/api/auth/mfa/confirmar", json={"codigo": _codigo(segredo)}).status_code == 200
+
+
+def test_sem_chave_iniciar_responde_503_e_nada_e_gravado(
+    api: TestClient,
+    sessao: Session,
+    usuario: Usuario,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Critério de aceite 3, e o comportamento central do ADR 0008.
+
+    Um sistema que degrada em silêncio para texto claro é pior que um que
+    recusa: quem ativou o segundo fator achando que estava protegido não teria
+    como descobrir que não estava. 503 e não 500 porque é indisponibilidade de
+    configuração do servidor, não erro de quem chama — a mesma requisição
+    passará a funcionar assim que a chave existir.
+    """
+    assert _login(api, usuario).status_code == 200
+    configurar_chaves_mfa(monkeypatch, "")
+
+    resposta = api.post("/api/auth/mfa/iniciar")
+
+    assert resposta.status_code == 503
+    # A resposta não conta a configuração do servidor a quem chama: o nome da
+    # variável vive no log e no warning do boot.
+    assert "MFA_SECRET_KEYS" not in resposta.text
+
+    # E NADA foi gravado: nem cifrado, nem em claro.
+    sessao.expire_all()
+    assert _coluna_crua(sessao, usuario) is None
+
+
+def test_sem_chave_quem_nao_usa_mfa_continua_logando(
+    api: TestClient, usuario: Usuario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A falta da chave para UM recurso opcional, e não a API inteira.
+
+    É a razão de `main._validar_configuracao_de_mfa` avisar em vez de recusar
+    subir: derrubar todo mundo por causa de um segundo fator que a maioria nem
+    ativou seria trocar uma indisponibilidade parcial por uma total.
+    """
+    configurar_chaves_mfa(monkeypatch, "")
+
+    resposta = _login(api, usuario)
+
+    assert resposta.status_code == 200
+    assert resposta.json()["email"] == usuario.email
+    assert api.get("/api/operadoras").status_code == 200
+
+
+def test_segredo_cifrado_pela_chave_antiga_continua_verificando_apos_a_rotacao(
+    api: TestClient, sessao: Session, usuario: Usuario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Critério de aceite 4: rotação sem downtime e sem script de emergência.
+
+    Sem `MultiFernet`, trocar a chave exigiria reescrever a coluna inteira antes
+    do deploy — e o passo entre uma coisa e outra é justamente onde o login de
+    quem tem MFA para de funcionar.
+    """
+    # A conta ativa o segundo fator com a chave que vai ser aposentada.
+    configurar_chaves_mfa(monkeypatch, TEST_MFA_SECRET_KEY_ANTIGA)
+    segredo, _ = _ativar_mfa(api, usuario)
+    cifrado_com_a_antiga = _coluna_crua(sessao, usuario)
+    api.cookies.clear()
+
+    # A rotação: chave nova na frente, antiga ainda na lista.
+    configurar_chaves_mfa(monkeypatch, f"{TEST_MFA_SECRET_KEY},{TEST_MFA_SECRET_KEY_ANTIGA}")
+
+    assert _login(api, usuario).status_code == 200
+    verificar = api.post("/api/auth/mfa/verificar", json={"codigo": _codigo(segredo, delta=1)})
+
+    assert verificar.status_code == 200
+    assert api.get("/api/auth/eu").status_code == 200
+    # A linha NÃO é recifrada de carona: rotacionar a chave não reescreve dado
+    # que ninguém tocou, e é por isso que a antiga precisa ficar na lista.
+    sessao.expire_all()
+    assert _coluna_crua(sessao, usuario) == cifrado_com_a_antiga
+
+
+def test_codigo_de_recuperacao_loga_quem_esta_com_o_segredo_ilegivel(
+    api: TestClient, sessao: Session, usuario: Usuario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Critério de aceite 5, e a armadilha que a cifra cria.
+
+    Perder `MFA_SECRET_KEYS` torna ilegível o segundo fator de quem o tem ativo.
+    A saída é o código de recuperação — hasheado em Argon2id e independente do
+    segredo —, e ela só continua existindo porque `SegredoCifrado` degrada a
+    leitura para `None` em vez de levantar: com `None`, `/mfa/verificar` pula o
+    TOTP e cai no código de recuperação, que é o caminho de volta.
+
+    Levantar na leitura derrubaria com 500 justamente a rota de emergência, e a
+    conta ficaria sem saída nenhuma.
+    """
+    _, codigos = _ativar_mfa(api, usuario)
+    api.cookies.clear()
+
+    # A chave se perdeu (ou foi rotacionada errado): o segredo não abre mais.
+    configurar_chaves_mfa(monkeypatch, TEST_MFA_SECRET_KEY_ANTIGA)
+    sessao.expire_all()
+    assert usuario.mfa_secret is None
+    assert usuario.mfa_ativado is True
+
+    assert _login(api, usuario).json() == {"mfa_pendente": True}
+    resposta = api.post("/api/auth/mfa/verificar", json={"codigo": codigos[0]})
+
+    assert resposta.status_code == 200
+    assert resposta.json()["email"] == usuario.email
+    assert api.get("/api/auth/eu").status_code == 200

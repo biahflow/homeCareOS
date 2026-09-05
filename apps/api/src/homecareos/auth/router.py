@@ -70,6 +70,7 @@ from homecareos.auth.schema import (
     UsuarioOut,
 )
 from homecareos.config import Settings, get_settings
+from homecareos.db import cifra
 from homecareos.db.models import CodigoRecuperacaoMfa, Usuario
 from homecareos.db.session import get_session
 from homecareos.mailer.errors import EnvioEmailError
@@ -105,6 +106,16 @@ MENSAGEM_MFA_NAO_ATIVO = "o segundo fator não está ativado nesta conta"
 # máquina não tem celular, não tem app autenticador e não tem segundo fator
 # para configurar — ver `_usuario_da_sessao`.
 MENSAGEM_MFA_SO_USUARIO = "o segundo fator é configurado por sessão de usuário"
+
+# Mensagem do 503 de `/mfa/iniciar` sem `MFA_SECRET_KEYS` (ADR 0008). O texto
+# não cita a variável para quem chama: é informação de infraestrutura, e a
+# resposta da API não é o lugar de contar a configuração do servidor. Quem
+# precisa do nome dela é o operador, e ele o encontra no `logger.error` que
+# acompanha esta recusa e no warning do boot.
+MENSAGEM_MFA_INDISPONIVEL = (
+    "o segundo fator está temporariamente indisponível por configuração do servidor; "
+    "avise quem administra o sistema"
+)
 
 
 def normalizar_email(email: str) -> str:
@@ -605,7 +616,9 @@ def _usuario_da_sessao(principal: Principal, session: Session) -> Usuario:
     summary="Gera o segredo TOTP para cadastrar no app autenticador",
     description=(
         "Devolve o segredo e a URI `otpauth://` do QR code. **Não ativa nada**: "
-        "a ativação é `POST /api/auth/mfa/confirmar`. Com MFA já ativado: 409."
+        "a ativação é `POST /api/auth/mfa/confirmar`. Com MFA já ativado: 409. "
+        "Sem chave de cifra configurada no servidor: 503, e nada é gravado — o "
+        "segredo nunca vai para o banco em claro (ADR 0008)."
     ),
 )
 def iniciar_mfa(
@@ -629,12 +642,36 @@ def iniciar_mfa(
     fator, com uma sessão que pode ser sequestrada, seria trocar a credencial
     por outra sem provar nada. Desativar (com senha e código) e ativar de novo é
     o caminho.
+
+    **Sem `MFA_SECRET_KEYS`, 503 — e nada é gravado** (ADR 0008). O segredo é
+    cifrado em repouso pelo tipo da coluna (`db/cifra.SegredoCifrado`), e sem
+    chave a alternativa seria gravá-lo em claro. Um sistema que degrada em
+    silêncio para texto claro é pior que um que recusa: quem ativou o MFA
+    achando que estava protegido não tem como descobrir que não estava.
+
+    **503 e não 500**: é indisponibilidade de configuração do servidor, não erro
+    de quem chama — a requisição está correta e passará a funcionar assim que a
+    chave existir, sem ninguém mudar o cliente. A recusa vem **antes** de
+    `gerar_segredo()`: não faz sentido produzir credencial que não tem onde ser
+    guardada.
     """
     usuario = _usuario_da_sessao(principal, session)
     if usuario.mfa_ativado:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=MENSAGEM_MFA_JA_ATIVO,
+        )
+
+    if not cifra.cifra_disponivel():
+        # O nome da variável fica no log do servidor, não na resposta: quem
+        # precisa dele é o operador. Ver `MENSAGEM_MFA_INDISPONIVEL`.
+        logger.error(
+            "POST /api/auth/mfa/iniciar recusado: %s",
+            cifra.MENSAGEM_SEM_CHAVE,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=MENSAGEM_MFA_INDISPONIVEL,
         )
 
     segredo = mfa.gerar_segredo()

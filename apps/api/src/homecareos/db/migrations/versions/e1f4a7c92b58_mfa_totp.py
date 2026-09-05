@@ -4,6 +4,13 @@ Revision ID: e1f4a7c92b58
 Revises: d3b7c1e5f240
 Create Date: 2026-09-03 00:00:00.000000
 
+> **NOTA DE 2026-09-05 — a seção "Limitação declarada, não escondida", no fim
+> desta docstring, deixou de valer.** `usuarios.mfa_secret` passou a ser cifrada
+> em repouso pela migration `f2b9d6e04a17` (ADR 0008). O texto original fica
+> abaixo como está, sem edição: `upgrade()` e `downgrade()` desta revision não
+> são tocados, porque migration já aplicada não se reescreve. Leia aquela seção
+> como registro do que valia até `f2b9d6e04a17`, não como o estado de hoje.
+
 Implementa a issue #35: MFA por TOTP em app autenticador.
 
 Três colunas em `usuarios` — `mfa_secret`, `mfa_ativado` e `mfa_ultimo_passo`.

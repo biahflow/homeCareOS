@@ -6,6 +6,7 @@ de negócio precisam de banco, a auth não.
 from __future__ import annotations
 
 import inspect
+import logging
 import uuid
 from collections.abc import Iterator
 
@@ -18,6 +19,7 @@ from homecareos.api.auth import MENSAGEM_CREDENCIAL_INVALIDA, require_api_key
 from homecareos.api.errors import register_exception_handlers
 from homecareos.config import Settings, get_settings
 from homecareos.main import create_app
+from tests.conftest import TEST_MFA_SECRET_KEY
 
 CHAVE_VALIDA = "chave-valida-de-teste"
 
@@ -131,6 +133,63 @@ def test_api_keys_vazio_em_homolog_tambem_impede_o_boot() -> None:
 
 def test_api_keys_preenchido_em_production_sobe_normalmente() -> None:
     create_app(Settings(environment="production", api_keys="chave-de-producao"))
+
+
+# --- boot: chave da cifra do segredo TOTP (ADR 0008) -------------------------
+
+# As duas decisões de boot são deliberadamente DIFERENTES, e o par de testes
+# abaixo é o que guarda a diferença. Sem `API_KEYS` fora de `local`, toda rota de
+# `/api/*` perde uma credencial e recusar subir é proporcional. Sem
+# `MFA_SECRET_KEYS`, o que para é um recurso OPCIONAL POR PESSOA — quem não
+# ativou o segundo fator não é afetado —, e derrubar a API inteira trocaria uma
+# indisponibilidade parcial por uma total.
+
+
+def test_mfa_secret_keys_vazio_nao_impede_o_boot_em_ambiente_nenhum() -> None:
+    """Nem em produção: MFA é opcional por pessoa (ADR 0008).
+
+    O que não acontece é degradar em silêncio — `POST /api/auth/mfa/iniciar`
+    responde 503 e nada é gravado em claro. Isso é provado em
+    `test_api_mfa.py`; aqui o que se prova é que a API SOBE.
+    """
+    create_app(Settings(environment="production", api_keys="k", mfa_secret_keys=""))
+    create_app(Settings(environment="local", api_keys="k", mfa_secret_keys=""))
+
+
+def test_mfa_secret_keys_vazio_avisa_no_boot(caplog: pytest.LogCaptureFixture) -> None:
+    """Subir em silêncio seria pior que recusar subir.
+
+    O único sinal de que ninguém consegue ativar o segundo fator é este warning:
+    quem não ativou MFA não percebe nada, e quem tentar ativar vai receber um
+    503 que o operador precisa conseguir explicar.
+    """
+    with caplog.at_level(logging.WARNING, logger="homecareos.main"):
+        create_app(Settings(environment="production", api_keys="k", mfa_secret_keys=""))
+
+    assert "MFA_SECRET_KEYS" in caplog.text
+    # O warning diz o EFEITO, e não só o nome da variável: quem lê o log do
+    # deploy sem conhecer o ADR precisa entender o que deixou de funcionar.
+    assert "503" in caplog.text
+
+
+def test_mfa_secret_keys_malformado_impede_o_boot() -> None:
+    """Um typo não pode virar "sem chave".
+
+    Quem escreveu a variável quis cifrar; tratar o erro de digitação como
+    ausência desligaria a cifra justamente para quem pediu por ela, e o sintoma
+    apareceria só na primeira pessoa que tentasse ativar o MFA.
+    """
+    with pytest.raises(RuntimeError, match="MFA_SECRET_KEYS"):
+        create_app(Settings(environment="local", api_keys="k", mfa_secret_keys="nao-e-uma-chave"))
+
+
+def test_mfa_secret_keys_valido_sobe_sem_avisar(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="homecareos.main"):
+        create_app(
+            Settings(environment="production", api_keys="k", mfa_secret_keys=TEST_MFA_SECRET_KEY)
+        )
+
+    assert "MFA_SECRET_KEYS" not in caplog.text
 
 
 # --- OpenAPI: esquema de segurança declarado (AC7) ---------------------------

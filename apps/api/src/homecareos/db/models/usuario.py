@@ -16,11 +16,20 @@ Duas decisões desta tabela são de segurança, não de modelagem:
 `alertas_enviados.tipo`: um papel novo não deve exigir migration de tipo enum do
 Postgres. O fechamento da escrita é o enum do pydantic (`auth/schema.Papel`).
 
-As três colunas de MFA (issue #35) trazem uma limitação **declarada**:
-`mfa_secret` fica **em claro**. Com um dump do banco, o atacante gera códigos
-TOTP válidos. Não há KMS neste projeto, e "criptografar" com uma chave guardada
-no mesmo `.env` que acompanha o dump seria teatro — quem tem o banco geralmente
-tem a configuração. Ver a migration `e1f4a7c92b58` e o README.
+Das três colunas de MFA (issue #35), `mfa_secret` é **cifrada em repouso** desde
+o ADR 0008: o tipo da coluna é `SegredoCifrado` (`db/cifra.py`), que cifra na
+escrita e decifra na leitura com as chaves de `MFA_SECRET_KEYS`. O que isso
+fecha e o que não fecha, sem exagero: fecha o vetor comum — backup vazado,
+réplica de leitura, acesso de DBA, dump obtido por injection —, em que o
+atacante tem o conteúdo do banco e não tem a chave. **Não** fecha host inteiro
+comprometido, onde a chave e o banco são lidos juntos. É redução real de
+superfície, não é cofre; o cofre é KMS, e o ADR 0008 o registra como o passo
+seguinte.
+
+Até o ADR 0008 esta docstring afirmava que cifrar seria "teatro" porque a chave
+acompanharia o dump. A premissa era falsa: a chave é provisionada separada do
+`DATABASE_URL`, e um dump de banco não a carrega. Ver `db/cifra.py`, a migration
+`f2b9d6e04a17` e o README.
 """
 
 import uuid
@@ -31,6 +40,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from homecareos.db.base import Base
+from homecareos.db.cifra import SegredoCifrado
 
 
 class Usuario(Base):
@@ -54,11 +64,12 @@ class Usuario(Base):
     ativo: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("true")
     )
-    # Segredo TOTP em base32, EM CLARO — limitação declarada, ver a docstring
-    # do módulo. `NULL` enquanto ninguém ativou o segundo fator, e volta a
-    # `NULL` quando alguém o desativa: segredo órfão de MFA desligado só serve
-    # para vazar depois.
-    mfa_secret: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Segredo TOTP em base32 para o código Python; token Fernet na coluna. Quem
+    # traduz é `SegredoCifrado`, e é por ele ser o TIPO da coluna que não sobra
+    # caminho para uma escrita nova esquecer de cifrar. `NULL` enquanto ninguém
+    # ativou o segundo fator, e volta a `NULL` quando alguém o desativa: segredo
+    # órfão de MFA desligado só serve para vazar depois.
+    mfa_secret: Mapped[str | None] = mapped_column(SegredoCifrado, nullable=True)
     # Só `True` depois de a pessoa provar, com um código, que o app
     # autenticador dela guardou o segredo. Segredo gravado por
     # `POST /api/auth/mfa/iniciar` e não confirmado não exige nada de ninguém —

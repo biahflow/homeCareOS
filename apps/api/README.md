@@ -666,22 +666,73 @@ recusados. Sem isso, o mesmo código valeria durante toda a janela de tolerânci
 (`MFA_JANELA_PASSOS`, ±30s) e quem o interceptasse teria ~90 segundos para
 reusá-lo.
 
+#### Cifra do segredo em repouso
+
+`usuarios.mfa_secret` é **cifrada** desde o
+[ADR 0008](../../docs/adr/0008-cifra-do-segredo-totp-em-repouso.md): um
+`select mfa_secret from usuarios` devolve token Fernet (`gAAAAA…`), não base32
+legível. A cifra vive no **tipo da coluna** (`db/cifra.SegredoCifrado`), e não em
+chamadas espalhadas pelo router — assim nenhuma escrita futura consegue esquecer
+de cifrar.
+
+**O que isso fecha:** backup vazado, réplica de leitura, acesso de DBA, dump
+obtido por injection — os casos em que alguém tem o *conteúdo* do banco e não tem
+a chave, que é provisionada separada do `DATABASE_URL`. **O que não fecha:** host
+inteiro comprometido, onde a chave e o banco são lidos juntos.
+
+`MFA_SECRET_KEYS` é uma lista separada por vírgula com a mesma semântica de
+`API_KEYS`: **a primeira cifra, todas decifram**. Rotacionar é pôr a nova na
+frente e deixar a antiga até nenhum segredo depender dela — sem downtime.
+
+Três comportamentos que vale conhecer antes de o primeiro deploy ensiná-los:
+
+- **Sem chave, `POST /api/auth/mfa/iniciar` responde 503 e nada é gravado.**
+  Ninguém consegue *ativar* o segundo fator, e nenhum segredo vai para o banco
+  em claro.
+- **A aplicação sobe sem a chave**, com `warning` no boot: MFA é opcional por
+  pessoa, e derrubar a API inteira por um recurso opcional é desproporcional.
+  Chave *malformada* é outro caso e **impede o boot** — um typo não pode virar
+  "sem chave".
+- **A migration `f2b9d6e04a17` precisa da chave** quando já existe segredo a
+  cifrar, e para com mensagem se ela faltar. Num banco sem nenhum segredo, roda
+  sem chave.
+
+Uma pegadinha operacional: `Settings` lê o `.env` do **diretório de trabalho**, e
+o `.env` deste projeto fica na raiz do repositório. Pelo Compose
+(`docker compose run --rm api-migrate`) a variável chega sozinha; rodando o
+alembic à mão de `apps/api`, exporte-a:
+
+```bash
+MFA_SECRET_KEYS=... uv run alembic upgrade head
+```
+
 #### Configuração
 
 ```bash
 MFA_EMISSOR=HomeCareOS       # nome mostrado no app autenticador e no QR code
 MFA_JANELA_PASSOS=1          # tolerância de relógio: ±1 passo (±30s)
 MFA_CODIGOS_RECUPERACAO=8    # quantos códigos a ativação gera
+# Chaves Fernet que cifram o segredo em repouso: a primeira cifra, todas
+# decifram. Gere uma com:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# É material de BACKUP tão crítico quanto o banco — e guardado em outro lugar
+# que ele, senão a cifra não protege de nada.
+MFA_SECRET_KEYS=
 ```
 
 #### Limitações honestas
 
-- **O segredo TOTP fica em claro no banco** (`usuarios.mfa_secret`). Com um
-  dump, o atacante gera códigos válidos — o segundo fator não resiste a quem já
-  tem o banco. Não há KMS neste projeto, e "criptografar" com uma chave guardada
-  no mesmo `.env` que acompanha o dump seria teatro: quem tem o banco geralmente
-  tem a configuração. A limitação é **declarada**, não escondida; fechá-la de
-  verdade é KMS/HSM, com a sua própria issue.
+- **A cifra do segredo não resiste a host comprometido.** Ela fecha o vetor
+  comum — backup, réplica, DBA, dump por injection —, em que alguém tem o
+  conteúdo do banco e não tem a chave. Quem executa código no servidor da API lê
+  os dois juntos. É redução real de superfície, não é cofre; o cofre é KMS, e o
+  [ADR 0008](../../docs/adr/0008-cifra-do-segredo-totp-em-repouso.md) o registra
+  como o passo seguinte. Ver "Cifra do segredo em repouso", acima.
+- **Perder `MFA_SECRET_KEYS` deixa quem tem MFA ativo dependendo do código de
+  recuperação** — que continua funcionando, mas `/mfa/desativar` e
+  `/mfa/reemitir-codigos` passam a responder 409 (elas exigem segredo legível).
+  Sair desse estado exige quem administre o banco. Guarde a chave em backup
+  separado do banco.
 - **Quem perde a lista *junto com o celular* ainda precisa de quem administre o
   banco.** `/mfa/reemitir-codigos` resolve o caso de quem perdeu só a lista, e
   ele exige o código do app autenticador — sem o celular não há como provar quem
