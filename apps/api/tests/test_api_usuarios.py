@@ -50,7 +50,7 @@ from homecareos.config import Settings, get_settings
 from homecareos.db.models import Sessao, Usuario
 from homecareos.db.session import get_sessionmaker
 from homecareos.main import app
-from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.conftest import AUTH_HEADERS, TEST_API_KEY, TEST_API_KEY_PAPEIS
 
 pytestmark = pytest.mark.integration
 
@@ -160,6 +160,7 @@ def usuarios(sessao: Session, rastro: list[uuid.UUID]) -> dict[Papel, Usuario]:
 def _overrides(settings: Settings, **extra: object) -> Settings:
     base: dict[str, object] = {
         "api_keys": TEST_API_KEY,
+        "api_key_papeis": TEST_API_KEY_PAPEIS,
         # Fora de `local` o cookie sai `Secure`, o `TestClient` fala HTTP e o
         # cookie não seria guardado — os testes de sessão passariam a medir a
         # flag em vez da autorização.

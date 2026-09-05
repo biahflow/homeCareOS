@@ -24,9 +24,9 @@ porque "por que ninguém foi avisado?" é pergunta de quem acompanha a operaçã
 e o gestor já lê o log de `/api/alertas`, que expõe o e-mail de quem recebeu e
 o texto do que foi dito.
 
-`X-API-Key` passa por `exigir_papel` em qualquer papel, como em toda rota (ver
-`auth/dependencies.exigir_papel`), e é por isso que o ator da auditoria tem o
-id nullable.
+`X-API-Key` passa por `exigir_papel` com o papel que `API_KEY_PAPEIS` declarar
+(ADR 0007, ver `auth/dependencies.exigir_papel`), e é por isso que o ator da
+auditoria tem o id nullable.
 
 ## A resposta separa habilitado de disponível
 

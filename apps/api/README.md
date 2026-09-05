@@ -397,7 +397,7 @@ Duas credenciais convivem, e não se substituem (ADR 0001, issue #30):
 | credencial | quem usa | como |
 | --- | --- | --- |
 | **Sessão de usuário** | pessoas, pelo navegador | `POST /api/auth/login` devolve um cookie `httpOnly`; a sessão vive na tabela `sessoes` |
-| **`X-API-Key`** | integração máquina-a-máquina | header, como antes — é o que o cron `python -m homecareos.alerts.scan` usa |
+| **`X-API-Key`** | integração máquina-a-máquina | header; o que ela abre é declarado em `API_KEY_PAPEIS` (ADR 0007) |
 
 A sessão tem estado no Postgres (e não é um JWT) por causa da revogação:
 desligar o acesso de alguém a prontuário clínico não pode esperar um token
@@ -442,10 +442,23 @@ escreve baseline, que é dado de gestão e não de conferência.
 criar nem promover a `gestor` em `/api/usuarios`: ver "Administração de usuários"
 abaixo e o [ADR 0004](../../docs/adr/0004-administracao-de-usuarios-pela-api.md).
 
-**A autorização por papel só se aplica a sessão de usuário.** Requisição
-autenticada por `X-API-Key` passa por qualquer checagem de papel: a chave sempre
-deu acesso total a `/api/*` e é dela que dependem as integrações existentes.
-Estreitá-la é outra decisão, com outro ADR — não um ajuste desta trilha.
+**A `X-API-Key` também tem papel, e ele é declarado** — `API_KEY_PAPEIS`, uma
+lista separada por vírgula, [ADR 0007](../../docs/adr/0007-escopo-de-papel-da-chave-de-api.md).
+A chave passa numa rota quando algum papel declarado está entre os que a rota
+exige, e responde **403** quando não está.
+
+**Vazio é o default, e é restritivo**: a chave continua autenticando — chave
+ausente ou errada segue respondendo 401, indistinguível de cookie inválido — mas
+não abre rota de papel restrito nenhuma. `API_KEY_PAPEIS=conferente,coordenador,gestor`
+devolve o acesso total que ela tinha até o ADR 0007; a diferença é que agora
+isso é uma decisão escrita, e não o estado em que o sistema nasce. Papel escrito
+errado não é ignorado: a aplicação recusa subir.
+
+Até o ADR 0007 a chave passava em qualquer checagem, e a justificativa
+registrada aqui e no código dizia que o cron `python -m homecareos.alerts.scan`
+dependia disso. **Não dependia** — o cron abre uma sessão do banco e não faz
+requisição HTTP à API em momento nenhum, então não há header para mandar. Nenhum
+outro consumidor do repositório manda a chave: o frontend usa cookie de sessão.
 
 `POST /api/pacientes` não consta da matriz aprovada e por isso herda a regra do
 router (os três papéis), que é o comportamento que já existia.
@@ -767,8 +780,8 @@ nem quem edite regra, e a saída seria acesso ao banco. Ela cobre o rebaixamento
 junto com a desativação — as duas esvaziam a coordenação do mesmo jeito. Com
 sessão de usuário ela é defesa em profundidade (quem chama é sempre um
 coordenador ativo e não pode agir sobre a própria conta, então sempre resta ele);
-para a `X-API-Key`, que passa por qualquer checagem de papel e não tem "si
-mesmo", ela é a única trava.
+para a `X-API-Key` declarada como `coordenador`, que não tem "si mesmo", ela é a
+única trava.
 
 #### Desativar, nunca excluir — e desativar revoga as sessões
 

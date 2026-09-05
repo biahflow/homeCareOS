@@ -38,7 +38,7 @@ from homecareos.extraction.dispatcher import SyncExtractionDispatcher
 from homecareos.extraction.schema import EvolucaoProntuario, ExtractionResult, PaginaDocumento
 from homecareos.intake.router import get_document_storage, get_extraction_dispatcher
 from homecareos.main import app
-from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.conftest import AUTH_HEADERS, TEST_API_KEY, TEST_API_KEY_PAPEIS
 from tests.fakes import FakeStorage, make_pdf
 
 pytestmark = pytest.mark.integration
@@ -105,7 +105,11 @@ def api(settings: Settings, storage: FakeStorage) -> Iterator[TestClient]:
     app.dependency_overrides[get_document_storage] = lambda: storage
     app.dependency_overrides[get_extraction_dispatcher] = lambda: dispatcher
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
-        update={"api_keys": TEST_API_KEY, "environment": "local"}
+        update={
+            "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
+            "environment": "local",
+        }
     )
     try:
         yield TestClient(app)
@@ -154,7 +158,11 @@ def clientes(
     app.dependency_overrides[get_document_storage] = lambda: storage
     app.dependency_overrides[get_extraction_dispatcher] = lambda: dispatcher
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
-        update={"api_keys": TEST_API_KEY, "environment": "local"}
+        update={
+            "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
+            "environment": "local",
+        }
     )
     try:
         logados = {}

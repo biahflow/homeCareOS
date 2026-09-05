@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from homecareos.api import auth as auth_module
 from homecareos.api.auth import MENSAGEM_CREDENCIAL_INVALIDA, require_api_key
 from homecareos.api.errors import register_exception_handlers
+from homecareos.auth.schema import Papel
 from homecareos.config import Settings, get_settings
 from homecareos.main import create_app
 
@@ -131,6 +132,43 @@ def test_api_keys_vazio_em_homolog_tambem_impede_o_boot() -> None:
 
 def test_api_keys_preenchido_em_production_sobe_normalmente() -> None:
     create_app(Settings(environment="production", api_keys="chave-de-producao"))
+
+
+# --- boot: API_KEY_PAPEIS inválido (ADR 0007) --------------------------------
+
+
+def test_api_key_papeis_vazio_nao_impede_o_boot() -> None:
+    """Vazio é o default do ADR 0007 e é estado válido: a chave só não abre nada."""
+    create_app(Settings(environment="production", api_keys="chave", api_key_papeis=""))
+
+
+@pytest.mark.parametrize("papeis", ["coordenador", " gestor , conferente ", "gestor,gestor"])
+def test_api_key_papeis_com_papel_valido_sobe_normalmente(papeis: str) -> None:
+    create_app(Settings(environment="production", api_keys="chave", api_key_papeis=papeis))
+
+
+@pytest.mark.parametrize("papeis", ["admin", "coordenadora", "coordenador,gestro", "Gestor"])
+def test_api_key_papeis_com_papel_desconhecido_impede_o_boot(papeis: str) -> None:
+    """Typo não pode degradar em silêncio para "a chave não abre nada".
+
+    O default restritivo e um nome escrito errado produziriam o MESMO efeito em
+    runtime — 403 em tudo — e a diferença entre os dois é justamente o que quem
+    configurou precisa saber. Vale em `local` também: ao contrário da chave
+    ausente, um typo aqui não é um estado de desenvolvimento válido.
+    """
+    with pytest.raises(RuntimeError, match="API_KEY_PAPEIS"):
+        create_app(Settings(environment="local", api_keys="chave", api_key_papeis=papeis))
+
+
+def test_a_mensagem_do_boot_lista_os_papeis_validos() -> None:
+    """A mensagem precisa ensinar a correção; sem isso, o próximo passo é ler o código."""
+    with pytest.raises(RuntimeError) as erro:
+        create_app(Settings(environment="local", api_keys="chave", api_key_papeis="admin"))
+
+    mensagem = str(erro.value)
+    assert "'admin'" in mensagem
+    for papel in Papel:
+        assert papel.value in mensagem
 
 
 # --- OpenAPI: esquema de segurança declarado (AC7) ---------------------------

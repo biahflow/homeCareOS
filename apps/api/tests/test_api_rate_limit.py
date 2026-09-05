@@ -48,7 +48,7 @@ from homecareos.intake.router import (
 from homecareos.limites.protecao import CHAVE_MAQUINA, JANELA, PREFIXO_USUARIO
 from homecareos.limites.schema import Recurso, limites_do_recurso
 from homecareos.main import app
-from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.conftest import AUTH_HEADERS, TEST_API_KEY, TEST_API_KEY_PAPEIS
 from tests.fakes import FakeDispatcher, FakeDocumentoRepository, FakeStorage, make_pdf
 
 pytestmark = pytest.mark.integration
@@ -152,6 +152,7 @@ def _aplicar_settings(settings: Settings, **limites: int) -> None:
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
         update={
             "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
             "environment": "local",
             "login_atraso_base_segundos": 0.0,
             "login_atraso_maximo_segundos": 0.0,

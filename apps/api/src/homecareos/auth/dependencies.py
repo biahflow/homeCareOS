@@ -109,29 +109,76 @@ def principal_atual(
     )
 
 
-def exigir_papel(*papeis: Papel) -> Callable[[Principal], Principal]:
+def papeis_da_chave_de_api(settings: Settings) -> frozenset[Papel]:
+    """Os papéis que a `X-API-Key` carrega, lidos de `settings.api_key_papeis`.
+
+    Lista separada por vírgula, como `api_keys`. **Vazio é o default e devolve
+    conjunto vazio**: a chave autentica mas não satisfaz `exigir_papel` nenhum.
+
+    Nome desconhecido levanta `ValueError` em vez de ser ignorado. Ignorar um
+    typo aqui seria degradar em silêncio para "sem papel nenhum" — a integração
+    passaria a tomar 403 em tudo e a resposta não diria por quê. Quem transforma
+    esse erro em recusa de subir é `main._validar_configuracao_de_auth`, no
+    mesmo lugar que já recusa subir sem `api_keys` fora de `local`.
+
+    A leitura é por requisição, como a de `api/auth._chaves_validas`: é um
+    `split` sobre uma configuração de poucos caracteres, e cachear obrigaria a
+    invalidar o cache nos testes que trocam `Settings` por override.
+    """
+    papeis: set[Papel] = set()
+    for nome in settings.api_key_papeis.split(","):
+        limpo = nome.strip()
+        if not limpo:
+            continue
+        try:
+            papeis.add(Papel(limpo))
+        except ValueError as exc:
+            validos = ", ".join(papel.value for papel in Papel)
+            raise ValueError(
+                f"api_key_papeis contém {limpo!r}, que não é um papel válido. "
+                f"Papéis válidos: {validos} (ou vazio, para a chave não abrir "
+                "rota de papel restrito nenhuma)."
+            ) from exc
+    return frozenset(papeis)
+
+
+def exigir_papel(*papeis: Papel) -> Callable[..., Principal]:
     """Devolve a dependency que só deixa passar quem tem um dos `papeis`.
 
-    **`Principal(tipo="maquina")` passa sempre, em qualquer papel exigido.** Não
-    é lapso: é compatibilidade deliberada. `X-API-Key` é a credencial
-    máquina-a-máquina e sempre deu acesso total a `/api/*` — o cron de alertas
-    (`python -m homecareos.alerts.scan`) e todas as integrações existentes
-    dependem disso. Estreitar a chave para um papel é outra decisão, com outro
-    ADR e outra migração de operação; embutir esse estreitamento aqui derrubaria
-    integração em produção sem ninguém ter decidido derrubar.
+    Para **sessão de usuário**, o papel é o da pessoa. Para
+    `Principal(tipo="maquina")`, é o que `API_KEY_PAPEIS` declarar (ADR 0007):
+    a chave passa se algum papel configurado estiver entre os exigidos, e
+    responde 403 caso contrário.
 
-    Consequência a ter escrita: a autorização por papel desta API vale para
-    **sessão de usuário**. Quem tem a chave continua podendo tudo.
+    O default (`api_key_papeis` vazio) é restritivo: a chave continua
+    autenticando — chave ausente ou errada é 401, e isso não mudou — mas não
+    abre nenhuma rota de papel restrito. Até o ADR 0007 ela passava em qualquer
+    checagem, e a justificativa registrada dizia que o cron de alertas dependia
+    disso. **Não dependia**: `alerts/scan.py` abre uma sessão do banco e não faz
+    requisição HTTP nenhuma — não há header para mandar. A compatibilidade que
+    sobrou é a das integrações máquina-a-máquina que a chave sempre permitiu, e
+    agora ela é declarada em vez de presumida.
+
+    401 e 403 continuam sendo coisas diferentes aqui: credencial inválida é 401
+    e indistinguível entre cookie e chave (ver `principal_atual`); credencial
+    válida sem o papel é 403 com `MENSAGEM_SEM_PERMISSAO`, que não nomeia o
+    papel que faltou.
     """
+    exigidos = frozenset(papeis)
 
-    def dependency(principal: Annotated[Principal, Depends(principal_atual)]) -> Principal:
+    def dependency(
+        principal: Annotated[Principal, Depends(principal_atual)],
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> Principal:
         if principal.tipo == "maquina":
-            return principal
-        if principal.papel in papeis:
-            return principal
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=MENSAGEM_SEM_PERMISSAO,
-        )
+            autorizado = bool(papeis_da_chave_de_api(settings) & exigidos)
+        else:
+            autorizado = principal.papel in exigidos
+        if not autorizado:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=MENSAGEM_SEM_PERMISSAO,
+            )
+        return principal
 
     return dependency

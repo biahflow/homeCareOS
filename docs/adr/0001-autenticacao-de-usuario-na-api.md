@@ -68,9 +68,16 @@ extração por Vision, que leva segundos por página. Se a medição um dia
 contrariar isso, a saída é cache de sessão sem trocar o modelo.
 
 **3. Coexistência com `X-API-Key`.** A chave continua válida e é o caminho da
-integração sem humano — hoje, o cron da varredura de alertas
-(`python -m homecareos.alerts.scan`). Sessão de usuário e chave de máquina são
-credenciais de naturezas diferentes e não se substituem.
+integração sem humano. Sessão de usuário e chave de máquina são credenciais de
+naturezas diferentes e não se substituem.
+
+**Correção ([ADR 0007](0007-escopo-de-papel-da-chave-de-api.md)).** Este item
+afirmava que o consumidor da chave era, "hoje", o cron da varredura de alertas
+(`python -m homecareos.alerts.scan`). Era falso: o cron abre uma sessão do banco
+e não faz requisição HTTP nenhuma. A afirmação foi repetida no README, no ADR
+0005 e num teste, e sustentava a decisão de a chave passar por qualquer checagem
+de papel. O ADR 0007 corrige a justificativa e estreita a chave — o que ela abre
+passa a ser declarado em `API_KEY_PAPEIS`, com default restritivo.
 
 **4. Três papéis:** `conferente`, `coordenador`, `gestor`.
 

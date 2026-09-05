@@ -32,10 +32,10 @@ os atualiza: ligar um canal já ligado não é decisão nova, é um clique.
 
 `atualizado_por`/`atualizado_por_usuario_id` são o mesmo par de `log_conferencia`
 e de `auditoria_usuarios`: rótulo legível mais identidade referencial, com o id
-**nullable** porque `exigir_papel` deixa `X-API-Key` passar em qualquer papel
-(`auth/dependencies.py`) e a chave mestra não tem "si mesmo" — ela sai com
-rótulo `"api"` (`auth.schema.ROTULO_MAQUINA`) e sem id. Forjar um id ali
-apontaria a auditoria para quem não agiu.
+**nullable** porque `exigir_papel` deixa passar a `X-API-Key` que declara o
+papel exigido (`API_KEY_PAPEIS`, ADR 0007) e a chave não tem "si mesmo" — ela
+sai com rótulo `"api"` (`auth.schema.ROTULO_MAQUINA`) e sem id. Forjar um id
+ali apontaria a auditoria para quem não agiu.
 
 `canal` é `String` com `unique`, e não a chave primária: a PK é UUID como em
 toda tabela do projeto, e `codigo` de `Operadora` é o precedente exato de chave
