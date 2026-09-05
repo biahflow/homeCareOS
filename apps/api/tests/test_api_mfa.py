@@ -1033,3 +1033,250 @@ def test_codigo_de_recuperacao_loga_quem_esta_com_o_segredo_ilegivel(
     assert resposta.status_code == 200
     assert resposta.json()["email"] == usuario.email
     assert api.get("/api/auth/eu").status_code == 200
+
+
+# --- 27-32. desativar com o segredo ilegível (ADR 0008, issue #39) -------------
+
+# O ADR 0008 registrou como trabalho futuro a consequência mais dura da cifra:
+# com a chave perdida, `/mfa/desativar` respondia 409 e quem entrava pelo código
+# de recuperação ficava com um segundo fator quebrado e sem saída pela API — e
+# ainda recebia uma mensagem que mentia para ela ("o segundo fator não está
+# ativado nesta conta"), porque `mfa_ativado` continua `True`. Os testes abaixo
+# são o fechamento dessa lacuna.
+
+
+def _perder_a_chave(monkeypatch: pytest.MonkeyPatch, sessao: Session, usuario: Usuario) -> None:
+    """Tira de cena a chave que cifrou o segredo — o pior dia do ADR 0008.
+
+    É o que acontece quando `MFA_SECRET_KEYS` se perde ou quando uma rotação
+    remove a chave antiga cedo demais: a coluna continua preenchida no banco e a
+    leitura degrada para `None` (`db/cifra.SegredoCifrado`), com a flag ainda
+    ligada.
+    """
+    configurar_chaves_mfa(monkeypatch, TEST_MFA_SECRET_KEY_ANTIGA)
+    sessao.expire_all()
+    assert usuario.mfa_secret is None
+    assert usuario.mfa_ativado is True
+
+
+def _codigo_de_recuperacao_errado(codigos: list[str]) -> str:
+    """Um código com a forma certa que **não** está na lista — sem depender de sorte.
+
+    Mesmo cuidado de `_codigo_errado`: sortear um valor e torcer para ele não
+    colidir dá um teste que falha na máquina de outra pessoa e não se reproduz.
+    """
+    for numero in range(len(codigos) + 1):
+        candidato = f"{numero:05d}-{numero:05d}"
+        if candidato not in codigos:
+            return candidato
+    raise AssertionError("nenhum código sobrou fora da lista")
+
+
+def _codigos_usados(sessao: Session, usuario: Usuario) -> int:
+    return (
+        sessao.scalar(
+            select(func.count())
+            .select_from(CodigoRecuperacaoMfa)
+            .where(
+                CodigoRecuperacaoMfa.usuario_id == usuario.id,
+                CodigoRecuperacaoMfa.used_at.is_not(None),
+            )
+        )
+        or 0
+    )
+
+
+def test_com_o_segredo_ilegivel_senha_e_codigo_de_recuperacao_desativam(
+    api: TestClient, sessao: Session, usuario: Usuario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saída para quem perdeu a chave da cifra, pelo caminho que ela percorre.
+
+    Continuam sendo **dois fatores**, e não há degradação: o código de
+    recuperação já é a credencial que pula o segundo fator no login, então quem
+    tem senha e código de recuperação já entra na conta. O que muda é que agora
+    ele também consegue sair do estado quebrado.
+    """
+    _, codigos = _ativar_mfa(api, usuario)
+    api.cookies.clear()
+    _perder_a_chave(monkeypatch, sessao, usuario)
+
+    # A pessoa entra pelo único caminho que sobrou: o código de recuperação.
+    assert _login(api, usuario).json() == {"mfa_pendente": True}
+    assert api.post("/api/auth/mfa/verificar", json={"codigo": codigos[0]}).status_code == 200
+
+    resposta = api.post(
+        "/api/auth/mfa/desativar", json={"senha": SENHA_DE_TESTE, "codigo": codigos[1]}
+    )
+
+    assert resposta.status_code == 204
+    sessao.expire_all()
+    assert usuario.mfa_ativado is False
+    assert usuario.mfa_ultimo_passo is None
+    # A coluna precisa ficar NULL DE VERDADE, e não só ler `None`: com o segredo
+    # ilegível o atributo já vinha `None` do banco, e um `= None` sobre `None`
+    # não é mudança nenhuma para o SQLAlchemy — sem `flag_modified`, o token que
+    # não abre continuaria gravado depois de o MFA ter sido desligado.
+    assert _coluna_crua(sessao, usuario) is None
+    restantes = sessao.scalar(
+        select(func.count())
+        .select_from(CodigoRecuperacaoMfa)
+        .where(CodigoRecuperacaoMfa.usuario_id == usuario.id)
+    )
+    assert restantes == 0
+
+    # E o login volta a ser de uma etapa: a conta saiu do estado quebrado.
+    api.cookies.clear()
+    volta = _login(api, usuario)
+    assert volta.status_code == 200
+    assert volta.json()["email"] == usuario.email
+
+
+def test_senha_errada_nao_queima_o_codigo_de_recuperacao(
+    api: TestClient, sessao: Session, usuario: Usuario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A armadilha do caminho novo: `consumir_codigo_recuperacao` CONSOME.
+
+    No caminho do TOTP os dois fatores são conferidos sempre, e é inofensivo —
+    verificar TOTP não gasta nada. Aqui não: conferir o código antes da senha
+    faria um erro de digitação na senha queimar um código de uma lista finita,
+    que é a última reserva de quem já está sem o segundo fator.
+    """
+    _, codigos = _ativar_mfa(api, usuario)
+    _perder_a_chave(monkeypatch, sessao, usuario)
+
+    recusado = api.post(
+        "/api/auth/mfa/desativar", json={"senha": "nao-e-a-senha", "codigo": codigos[0]}
+    )
+
+    assert recusado.status_code == 422
+    sessao.expire_all()
+    assert _codigos_usados(sessao, usuario) == 0
+    assert usuario.mfa_ativado is True
+
+    # E a prova de que ele não foi gasto: o MESMO código continua desativando.
+    aceito = api.post(
+        "/api/auth/mfa/desativar", json={"senha": SENHA_DE_TESTE, "codigo": codigos[0]}
+    )
+    assert aceito.status_code == 204
+
+
+def test_senha_errada_e_codigo_errado_respondem_o_mesmo_422_com_o_segredo_ilegivel(
+    api: TestClient, sessao: Session, usuario: Usuario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Duas mensagens diriam a quem está com a sessão de outra pessoa qual
+    metade da credencial ele já tem — a mesma razão do caminho do TOTP."""
+    _, codigos = _ativar_mfa(api, usuario)
+    _perder_a_chave(monkeypatch, sessao, usuario)
+
+    senha_errada = api.post(
+        "/api/auth/mfa/desativar", json={"senha": "nao-e-a-senha", "codigo": codigos[0]}
+    )
+    codigo_errado = api.post(
+        "/api/auth/mfa/desativar",
+        json={"senha": SENHA_DE_TESTE, "codigo": _codigo_de_recuperacao_errado(codigos)},
+    )
+
+    assert senha_errada.status_code == codigo_errado.status_code == 422
+    assert senha_errada.json() == codigo_errado.json()
+    # E o segundo fator continua ligado nos dois casos.
+    sessao.expire_all()
+    assert usuario.mfa_ativado is True
+
+
+def test_desativar_sem_mfa_ativado_continua_respondendo_409(
+    api: TestClient, usuario: Usuario
+) -> None:
+    """O 409 não sumiu: ele só deixou de valer para segredo ilegível.
+
+    `mfa_ativado=False` é "não há segundo fator para desligar", e continua vindo
+    antes do freio — não olha credencial nenhuma e não custa Argon2.
+    """
+    assert _login(api, usuario).status_code == 200
+
+    resposta = api.post(
+        "/api/auth/mfa/desativar", json={"senha": SENHA_DE_TESTE, "codigo": "123456"}
+    )
+
+    assert resposta.status_code == 409
+
+
+def test_com_o_segredo_legivel_o_codigo_de_recuperacao_nao_desativa(
+    api: TestClient, sessao: Session, usuario: Usuario
+) -> None:
+    """Regressão: o caminho novo não pode vazar para o fluxo de sempre.
+
+    Com o app autenticador funcionando, aceitar código de recuperação aqui
+    deixaria quem tem a senha e um código vazado desligar o segundo fator sem
+    tocar no celular de ninguém — e o código de recuperação existe justamente
+    para o caso em que o TOTP não está disponível.
+    """
+    segredo, codigos = _ativar_mfa(api, usuario)
+
+    recusado = api.post(
+        "/api/auth/mfa/desativar", json={"senha": SENHA_DE_TESTE, "codigo": codigos[0]}
+    )
+
+    assert recusado.status_code == 422
+    sessao.expire_all()
+    assert usuario.mfa_ativado is True
+    # E ele não foi consumido: continua valendo onde é aceito (`/mfa/verificar`).
+    assert _codigos_usados(sessao, usuario) == 0
+
+    # O TOTP de sempre continua desligando, com o mesmo 204.
+    aceito = api.post(
+        "/api/auth/mfa/desativar",
+        json={"senha": SENHA_DE_TESTE, "codigo": _codigo(segredo, delta=1)},
+    )
+    assert aceito.status_code == 204
+    sessao.expire_all()
+    assert usuario.mfa_ativado is False
+    assert _coluna_crua(sessao, usuario) is None
+
+
+def test_o_freio_vale_no_caminho_do_codigo_de_recuperacao(
+    settings: Settings, sessao: Session, usuario: Usuario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """O freio da issue #33 não pode ter ficado do lado de fora do caminho novo.
+
+    O prêmio aqui é o mesmo do caminho do TOTP — desligar o segundo fator —, e
+    um código de recuperação sondável sem 429 seria trocar dez dígitos por seis
+    e chamar de proteção.
+    """
+    limiar = 3
+    app.dependency_overrides[get_settings] = lambda: settings.model_copy(
+        update={
+            "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
+            "environment": "local",
+            "login_atraso_base_segundos": 0.0,
+            "login_atraso_maximo_segundos": 0.0,
+            "login_falhas_para_travar_conta": limiar,
+            # Lista curta de propósito: cada tentativa recusada varre os códigos
+            # não usados com um Argon2 por linha, e oito deles por tentativa
+            # fariam este teste dormir sem provar nada a mais.
+            "mfa_codigos_recuperacao": 3,
+        }
+    )
+    try:
+        cliente = TestClient(app)
+        _, codigos = _ativar_mfa(cliente, usuario)
+        _perder_a_chave(monkeypatch, sessao, usuario)
+        errado = _codigo_de_recuperacao_errado(codigos)
+
+        for _ in range(limiar):
+            recusado = cliente.post(
+                "/api/auth/mfa/desativar", json={"senha": SENHA_DE_TESTE, "codigo": errado}
+            )
+            assert recusado.status_code == 422
+
+        bloqueada = cliente.post(
+            "/api/auth/mfa/desativar", json={"senha": SENHA_DE_TESTE, "codigo": errado}
+        )
+
+        assert bloqueada.status_code == 429
+        assert bloqueada.headers["retry-after"]
+        # E o segundo fator continua de pé: a sondagem não conseguiu desligá-lo.
+        sessao.expire_all()
+        assert usuario.mfa_ativado is True
+    finally:
+        app.dependency_overrides.clear()

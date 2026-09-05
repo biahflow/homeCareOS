@@ -105,9 +105,21 @@ caminho para descobrir é o `.env.example` e o README, e o desfecho errado
 (integração parada, visível no primeiro minuto) é preferível ao outro (chave
 aberta em tudo, invisível até o incidente).
 
+**A metade diagnóstica desse custo foi fechada pela issue #39.** `API_KEY_PAPEIS`
+vazio **com `API_KEYS` configurada** passou a sair como `warning` no boot, dizendo
+o efeito — a chave autentica e não abre rota de papel restrito nenhuma — e como
+declarar os papéis. O que estava errado não era o default: era a assimetria de
+diagnóstico. Papel escrito errado derrubava o boot com mensagem; a variável
+ausente produzia o mesmo 403 em runtime e não tinha sinal nenhum. A resposta ao
+cliente continua sem contar nada (`MENSAGEM_SEM_PERMISSAO` não nomeia papel, e
+isso não deve mudar), mas quem opera deixou de depender de dedução. Continua
+sendo `warning`, e não recusa de subir: vazio é configuração legítima. Sem
+`API_KEYS` o aviso não sai — a chave nem existe, e esse caso já tem o dele.
+
 **O que fica em aberto.** O escopo é **por instalação**, não por chave: com duas
 chaves em `API_KEYS` para rotação, as duas carregam os mesmos papéis. Escopar
-integração a integração é o próximo passo, e está descrito abaixo.
+integração a integração é o próximo passo, e está descrito abaixo. Continua em
+aberto: o aviso de boot da issue #39 fecha o diagnóstico, não a granularidade.
 
 ## Alternativas consideradas
 

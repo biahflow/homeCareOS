@@ -454,6 +454,14 @@ devolve o acesso total que ela tinha até o ADR 0007; a diferença é que agora
 isso é uma decisão escrita, e não o estado em que o sistema nasce. Papel escrito
 errado não é ignorado: a aplicação recusa subir.
 
+**Vazio com `API_KEYS` configurada sai como `warning` no boot** (issue #39). Não
+é erro — vazio continua sendo estado válido —, mas ele produz em runtime o mesmo
+sintoma de um papel escrito errado (403 em toda chamada de máquina a rota
+restrita), e o corpo do 403 não diz que falta configuração, de propósito. Quem
+sobe um ambiente novo e esquece a variável descobre pelo log do deploy, e não
+por dedução. Sem `API_KEYS` o aviso não sai: a chave nem existe, e esse caso já
+tem o aviso (ou a recusa de subir) dele.
+
 Até o ADR 0007 a chave passava em qualquer checagem, e a justificativa
 registrada aqui e no código dizia que o cron `python -m homecareos.alerts.scan`
 dependia disso. **Não dependia** — o cron abre uma sessão do banco e não faz
@@ -580,7 +588,7 @@ uma etapa, com o comportamento de sempre.
 | --- | --- | --- |
 | `POST /api/auth/mfa/iniciar` | — | `{"secret": "...", "otpauth_uri": "otpauth://totp/..."}` |
 | `POST /api/auth/mfa/confirmar` | `{"codigo": "123456"}` | `{"codigos": ["a1b2c-3d4e5", ...]}` |
-| `POST /api/auth/mfa/desativar` | `{"senha": "...", "codigo": "123456"}` | 204 |
+| `POST /api/auth/mfa/desativar` | `{"senha": "...", "codigo": "123456"}` (ou um código de recuperação, com o segredo ilegível) | 204 |
 | `POST /api/auth/mfa/reemitir-codigos` | `{"senha": "...", "codigo": "123456"}` | `{"codigos": ["a1b2c-3d4e5", ...]}` |
 
 `/mfa/iniciar` grava o segredo **sem ativar nada**: um segredo que o app não
@@ -598,6 +606,17 @@ Argon2id: não há endpoint que mostre de novo os códigos de uma emissão.
 sequestrada desligaria o segundo fator sozinha, que é exatamente o que ele
 existe para impedir; com só a senha, bastaria a senha vazada, que é a hipótese
 que faz alguém ativar MFA. Senha errada e código errado respondem o mesmo 422.
+
+**Com o segredo TOTP ilegível, o `codigo` passa a ser um código de recuperação**
+(issue #39). Quando a chave de `MFA_SECRET_KEYS` se perde ou uma rotação remove
+a antiga cedo demais, a leitura do segredo degrada para `None` (ADR 0008) e o
+app autenticador deixa de valer — antes disso, a rota respondia 409 e quem
+entrava pelo código de recuperação **não conseguia desligar o próprio MFA**,
+ficando com um segundo fator quebrado e sem saída pela API. Continuam sendo dois
+fatores, e não há degradação: o código de recuperação já é a credencial que pula
+o segundo fator no login. O 409 hoje significa só uma coisa — `mfa_ativado` é
+`false`. Com o segredo legível nada muda: ali o `codigo` continua sendo só o
+TOTP, e um código de recuperação responde 422.
 
 Exigir os dois não bastava sozinho, e essa foi uma lacuna real até a issue #39:
 **a rota não aplicava o freio da issue #33**, então os 10⁶ códigos de seis
@@ -742,10 +761,16 @@ MFA_SECRET_KEYS=
   [ADR 0008](../../docs/adr/0008-cifra-do-segredo-totp-em-repouso.md) o registra
   como o passo seguinte. Ver "Cifra do segredo em repouso", acima.
 - **Perder `MFA_SECRET_KEYS` deixa quem tem MFA ativo dependendo do código de
-  recuperação** — que continua funcionando, mas `/mfa/desativar` e
-  `/mfa/reemitir-codigos` passam a responder 409 (elas exigem segredo legível).
-  Sair desse estado exige quem administre o banco. Guarde a chave em backup
-  separado do banco.
+  recuperação** — que continua logando a pessoa **e**, desde a issue #39,
+  desligando o segundo fator: `/mfa/desativar` aceita senha + código de
+  recuperação enquanto o segredo estiver ilegível, e o caminho de volta é
+  desligar e religar com `/mfa/iniciar`. `/mfa/reemitir-codigos` continua
+  respondendo 409 nesse estado, de propósito: emitir códigos novos para um
+  segundo fator que não gera código nenhum não devolve o app autenticador a
+  ninguém. **Quem perder a chave e esgotar os códigos de recuperação continua
+  trancado** — não existe rota administrativa que desative MFA de terceiro, e a
+  saída é intervenção direta no banco. Guarde a chave em backup separado do
+  banco.
 - **Quem perde a lista *junto com o celular* ainda precisa de quem administre o
   banco.** `/mfa/reemitir-codigos` resolve o caso de quem perdeu só a lista, e
   ele exige o código do app autenticador — sem o celular não há como provar quem

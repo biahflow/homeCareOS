@@ -299,6 +299,14 @@ class MfaDesativarRequest(BaseModel):
     segundo fator sozinha — que é exatamente o que ele existe para impedir. E a
     senha sozinha não bastaria porque ela pode ter vazado, que é a hipótese que
     faz alguém ativar MFA.
+
+    `codigo` é o TOTP do app autenticador e, **quando o segredo está ilegível no
+    servidor** (chave de cifra perdida, ADR 0008), um código de recuperação
+    (`a1b2c-3d4e5`). É um campo só pela mesma razão de `MfaVerificarRequest`:
+    para quem digita é a mesma pergunta, e dois campos separados diriam a quem
+    sonda qual dos dois caminhos falhou. Não há schema novo nem validação de
+    formato aqui — quem decide o que vale é o endpoint, que sabe se o segredo
+    abre.
     """
 
     senha: str = Field(min_length=1)
@@ -314,10 +322,10 @@ class MfaReemitirCodigosRequest(BaseModel):
     permanente, imune à troca de senha e ao próprio MFA.
 
     O `codigo` aqui é só o TOTP do app autenticador — ao contrário de
-    `MfaVerificarRequest`, ele **não** aceita código de recuperação. Aceitar
-    faria um código de recuperação vazado se transformar numa lista nova de
-    oito, que é o oposto do que uma lista finita e de uso único existe para
-    garantir.
+    `MfaVerificarRequest` e de `MfaDesativarRequest` com o segredo ilegível, ele
+    **não** aceita código de recuperação. Aceitar faria um código de recuperação
+    vazado se transformar numa lista nova de oito, que é o oposto do que uma
+    lista finita e de uso único existe para garantir.
     """
 
     senha: str = Field(min_length=1)

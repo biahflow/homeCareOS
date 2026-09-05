@@ -162,6 +162,48 @@ def test_api_key_papeis_com_papel_desconhecido_impede_o_boot(papeis: str) -> Non
         create_app(Settings(environment="local", api_keys="chave", api_key_papeis=papeis))
 
 
+def test_api_key_papeis_vazio_com_chave_configurada_avisa_no_boot(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """O estado válido que não tinha diagnóstico nenhum.
+
+    Vazio é o default do ADR 0007 e continua sendo estado legítimo — por isso
+    `warning`, e não recusa de subir. Mas ele produz em runtime o MESMO sintoma
+    do typo (403 em tudo para a máquina), e o typo era o único dos dois com
+    mensagem: quem esquece a variável num ambiente novo não descobre pela
+    resposta, porque `MENSAGEM_SEM_PERMISSAO` não nomeia papel, de propósito.
+    """
+    with caplog.at_level(logging.WARNING, logger="homecareos.main"):
+        app = create_app(Settings(environment="production", api_keys="chave", api_key_papeis=""))
+
+    # Continua sendo aviso, e não erro de boot: a app foi construída.
+    assert app is not None
+    assert "API_KEY_PAPEIS" in caplog.text
+    # O warning diz o EFEITO, e não só o nome da variável: quem lê o log do
+    # deploy sem conhecer o ADR 0007 precisa entender o que a chave não abre.
+    assert "403" in caplog.text
+
+
+@pytest.mark.parametrize("papeis", ["conferente", "coordenador,gestor"])
+def test_api_key_papeis_declarado_nao_avisa(papeis: str, caplog: pytest.LogCaptureFixture) -> None:
+    """Com papel declarado não há nada a avisar — e ruído no boot é o que faz
+    warning deixar de ser lido."""
+    with caplog.at_level(logging.WARNING, logger="homecareos.main"):
+        create_app(Settings(environment="production", api_keys="chave", api_key_papeis=papeis))
+
+    assert "API_KEY_PAPEIS" not in caplog.text
+
+
+def test_sem_api_keys_o_aviso_dos_papeis_nao_sai(caplog: pytest.LogCaptureFixture) -> None:
+    """Sem chave nenhuma, a `X-API-Key` não existe: dizer que ela "não abre rota
+    de papel restrito" seria ruído em cima do aviso que esse caso já tem."""
+    with caplog.at_level(logging.WARNING, logger="homecareos.main"):
+        create_app(Settings(environment="local", api_keys="", api_key_papeis=""))
+
+    assert "API_KEY_PAPEIS" not in caplog.text
+    assert "api_keys" in caplog.text
+
+
 def test_a_mensagem_do_boot_lista_os_papeis_validos() -> None:
     """A mensagem precisa ensinar a correção; sem isso, o próximo passo é ler o código."""
     with pytest.raises(RuntimeError) as erro:
