@@ -157,6 +157,49 @@ def usuarios(sessao: Session, rastro: list[uuid.UUID]) -> dict[Papel, Usuario]:
     return {papel: _novo_usuario(sessao, rastro, papel) for papel in Papel}
 
 
+@pytest.fixture
+def sem_outros_coordenadores_ativos(sessao: Session) -> Iterator[None]:
+    """Desativa, só durante o teste, os coordenadores ativos que já existiam.
+
+    A trava do último coordenador é **global por natureza**: quem responde é
+    `_coordenadores_ativos_alem_de`, que conta no banco inteiro, e é assim de
+    propósito — a `X-API-Key` não tem "si mesmo", então a verificação tem de ser
+    contra o banco. Por isso o padrão da issue #47 (`e325814`: a fixture cria a
+    própria entidade com identificador único e o teste filtra por ela) **não
+    alcança este caso**: não há recorte por entidade a fazer, porque a pergunta
+    que a regra faz é sobre todas as contas. A forma mais próxima em espírito é
+    escrever a premissa em voz alta, em vez de torcer para o banco a cumprir: o
+    coordenador do teste só é o último se nenhum outro estiver ativo.
+
+    Restaura **apenas os ids que esta fixture desativou**, fotografados no
+    setup. Reativar "todo mundo" devolveria à operação uma conta que alguém
+    desligou de propósito — o portão de qualidade não pode virar caminho de
+    reativação. O `yield` garante a restauração mesmo quando o teste falha no
+    meio da asserção.
+
+    O `UPDATE` é SQL cru pelo mesmo motivo dos teardowns acima e por mais um:
+    `Usuario.updated_at` tem `onupdate=func.now()`, que o ORM aplicaria, e o
+    banco de desenvolvimento ficaria com o carimbo de alteração de uma conta que
+    ninguém alterou.
+    """
+    ids = list(
+        sessao.scalars(
+            select(Usuario.id).where(
+                Usuario.papel == Papel.COORDENADOR.value, Usuario.ativo.is_(True)
+            )
+        ).all()
+    )
+    if ids:
+        sessao.execute(text("update usuarios set ativo = false where id = any(:ids)"), {"ids": ids})
+        sessao.commit()
+
+    yield
+
+    if ids:
+        sessao.execute(text("update usuarios set ativo = true where id = any(:ids)"), {"ids": ids})
+        sessao.commit()
+
+
 def _overrides(settings: Settings, **extra: object) -> Settings:
     base: dict[str, object] = {
         "api_keys": TEST_API_KEY,
@@ -435,7 +478,10 @@ def test_coordenador_nao_desativa_a_si_mesmo(
 
 
 def test_nem_a_chave_de_api_desativa_o_ultimo_coordenador_ativo(
-    api: TestClient, sessao: Session, rastro: list[uuid.UUID]
+    api: TestClient,
+    sessao: Session,
+    rastro: list[uuid.UUID],
+    sem_outros_coordenadores_ativos: None,
 ) -> None:
     """A terceira trava, pelo único caminho que a alcança.
 
@@ -444,6 +490,10 @@ def test_nem_a_chave_de_api_desativa_o_ultimo_coordenador_ativo(
     sempre resta ele. A chave de máquina passa por `exigir_papel` e não tem "si
     mesmo" — para ela, esta trava é a única, e é por isso que a verificação é
     contra o banco.
+
+    A premissa "o coordenador criado é o último ativo" é responsabilidade de
+    `sem_outros_coordenadores_ativos`, e não do acaso do banco — ver a docstring
+    da fixture.
     """
     coordenador = _novo_usuario(sessao, rastro, Papel.COORDENADOR)
     outros = sessao.scalar(
@@ -454,9 +504,9 @@ def test_nem_a_chave_de_api_desativa_o_ultimo_coordenador_ativo(
         )
     )
     assert outros is None, (
-        "este teste precisa que o coordenador criado seja o último ativo do "
-        "banco; há outro coordenador ativo (resíduo de teste anterior ou "
-        "usuário real neste banco)"
+        "a fixture `sem_outros_coordenadores_ativos` deveria ter deixado o "
+        "coordenador do teste como o único ativo; apareceu outro depois do "
+        "setup dela, e sem isso o 409 abaixo não estaria sendo medido"
     )
 
     desativacao = api.patch(
