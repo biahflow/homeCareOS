@@ -1,7 +1,7 @@
 """fonte correta e regex sem UF fixa nas regras candidatas de operadora (#39)
 
 Revision ID: 81397b5c0ce8
-Revises: a4d6c8b21f37
+Revises: f2b9d6e04a17
 Create Date: 2026-09-05 00:00:00.000000
 
 As 12 regras candidatas de operadora (6 Amil + 6 Unimed, `escopo='operadora'`,
@@ -31,20 +31,27 @@ UF do atendimento. Corrigido para `[A-Za-z]{2}`, igual à genérica
 `motivo_glosa` não mudou: já dizia só "UF e categoria explícitas", sem fixar
 `RJ`.
 
-## Conflito de cabeça conhecido, com a cifra do segredo TOTP
+## Por que o pai é a cifra do segredo TOTP, e não `a4d6c8b21f37`
 
 Esta migration e `f2b9d6e04a17` (cifra do segredo TOTP, ADR 0008) nasceram do
-mesmo pai, `a4d6c8b21f37`, em entregas paralelas. **Juntas em `main` elas
-produzem duas cabeças**, e `alembic upgrade head` falha com "Multiple head
-revisions are present" — nenhuma migration roda.
+mesmo pai, `a4d6c8b21f37`, em entregas paralelas. As duas PRs foram mescladas
+com 16 segundos de diferença e `main` ficou com **duas cabeças**: `alembic
+upgrade head` passou a falhar com "Multiple head revisions are present", e
+`test_migration_directory_has_a_single_head` reprovou no CI de `main` — que é
+exatamente o que esse teste existe para pegar.
 
-Encadear uma na outra aqui foi testado e **descartado**: a branch de baixo não
-contém a revision de cima, então o alembic nem monta o grafo (`KeyError`) e a
-PR fica com o CI vermelho até a outra ser mesclada.
+Resolvido reapontando o `down_revision` daqui para `f2b9d6e04a17`, o que era
+seguro porque **nenhum banco tinha aplicado esta revision**: o `alembic_version`
+de desenvolvimento estava em `f2b9d6e04a17`, e não há ambiente persistente além
+dele. Reapontar deixa o histórico linear; a alternativa (`alembic merge`, que
+cria uma terceira revision unindo as duas cabeças) seria obrigatória se alguma
+delas já tivesse sido aplicada em algum lugar.
 
-A resolução é no merge: **quem for mesclado por segundo troca o próprio
-`down_revision` pela revision que entrou primeiro.** É uma linha, e o teste de
-cabeça única em `tests/test_migrations.py` reprova se alguém esquecer.
+Encadear as duas antes do merge chegou a ser testado e foi descartado na época:
+a branch de baixo não continha a revision de cima, o Alembic não montava o grafo
+(`KeyError`) e o CI da PR ficava vermelho até a outra entrar. O custo dessa
+escolha foi esta correção depois — que só é barata porque nada havia sido
+aplicado.
 
 ## Por que migration, e não só o JSON
 
@@ -98,7 +105,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "81397b5c0ce8"
-down_revision: str | None = "a4d6c8b21f37"
+down_revision: str | None = "f2b9d6e04a17"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
