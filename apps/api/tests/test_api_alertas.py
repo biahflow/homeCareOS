@@ -95,7 +95,7 @@ from homecareos.db.models.enums import ResultadoValidacao
 from homecareos.db.session import get_sessionmaker
 from homecareos.main import app
 from homecareos.rules.schema import AcaoRegra, ResultadoAvaliacao
-from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.conftest import AUTH_HEADERS, TEST_API_KEY, TEST_API_KEY_PAPEIS
 
 pytestmark = pytest.mark.integration
 
@@ -231,6 +231,7 @@ def _com_alertas(settings: Settings, **overrides: object) -> Settings:
     """Settings do cenário: gateway "configurado" e destinatários próprios do teste."""
     base: dict[str, object] = {
         "api_keys": TEST_API_KEY,
+        "api_key_papeis": TEST_API_KEY_PAPEIS,
         "uazapi_base_url": BASE_URL_FALSA,
         "uazapi_token": TOKEN_FALSO,
         # Explícito, e não herdado do default: estes testes falam do canal de

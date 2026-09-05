@@ -11,11 +11,10 @@ onde antes ficava `require_api_key`: um endpoint novo nasce protegido por
 construção, sem depender de alguém lembrar de proteger cada rota — é a mesma
 regra que a docstring de `api/auth.py` já justificava.
 
-`exigir_papel(...)` **não** substitui a chave de API: ela continua válida e
-continua dando acesso total, porque é a credencial máquina-a-máquina de que o
-cron `python -m homecareos.alerts.scan` depende. Papel só filtra sessão de
-usuário — a justificativa completa está na docstring de
-`auth/dependencies.exigir_papel`.
+`exigir_papel(...)` **não** substitui a chave de API: a `X-API-Key` continua
+autenticando `/api/*`. O que ela abre é que passou a ser declarado, em
+`API_KEY_PAPEIS` (ADR 0007), com default restritivo — a justificativa completa
+está na docstring de `auth/dependencies.exigir_papel`.
 
 Onde um router mistura capacidades de papéis diferentes, o router leva a regra
 mais larga e o endpoint restritivo leva a sua própria, declarada nele mesmo
@@ -38,7 +37,7 @@ from homecareos.api.routers.operadoras import router as operadoras_router
 from homecareos.api.routers.pacientes import router as pacientes_router
 from homecareos.api.routers.pendencias import router as pendencias_router
 from homecareos.auth.auditoria_router import router as auditoria_usuarios_router
-from homecareos.auth.dependencies import exigir_papel
+from homecareos.auth.dependencies import exigir_papel, papeis_da_chave_de_api
 from homecareos.auth.router import router as auth_router
 from homecareos.auth.schema import Papel
 from homecareos.auth.usuarios_router import router as usuarios_router
@@ -52,12 +51,26 @@ logger = logging.getLogger(__name__)
 
 
 def _validar_configuracao_de_auth(settings: Settings) -> None:
-    """Recusa subir sem chave configurada fora de `local`.
+    """Recusa subir sem chave configurada fora de `local`, ou com papel inválido.
 
     Em produção (ou qualquer ambiente que não seja `local`), "sem chave
     configurada" nunca pode significar silenciosamente "sem autenticação" —
     é melhor a aplicação não subir do que subir com `/api/*` aberto.
+
+    `API_KEY_PAPEIS` com nome de papel desconhecido derruba o boot em **qualquer**
+    ambiente, `local` incluído: ao contrário da chave ausente, um typo ali não é
+    um estado de desenvolvimento válido, é uma configuração que degradaria em
+    silêncio para "a chave não abre nada" (ver
+    `auth/dependencies.papeis_da_chave_de_api`).
     """
+    try:
+        papeis_da_chave_de_api(settings)
+    except ValueError as exc:
+        # Vira `RuntimeError` para que a recusa de subir tenha um tipo só, o
+        # mesmo da chave ausente logo abaixo. A mensagem original é preservada:
+        # ela é que diz qual valor está errado e quais são os válidos.
+        raise RuntimeError(f"API_KEY_PAPEIS inválido: {exc}") from exc
+
     tem_chave = bool(settings.api_keys.strip())
     if tem_chave:
         return

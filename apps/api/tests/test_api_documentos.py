@@ -37,7 +37,7 @@ from homecareos.db.models import (
 )
 from homecareos.db.session import get_sessionmaker
 from homecareos.main import app
-from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.conftest import AUTH_HEADERS, TEST_API_KEY, TEST_API_KEY_PAPEIS
 
 pytestmark = pytest.mark.integration
 
@@ -74,7 +74,7 @@ def settings() -> Settings:
 @pytest.fixture
 def api(settings: Settings) -> Iterator[TestClient]:
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
-        update={"api_keys": TEST_API_KEY}
+        update={"api_keys": TEST_API_KEY, "api_key_papeis": TEST_API_KEY_PAPEIS}
     )
     try:
         yield TestClient(app)

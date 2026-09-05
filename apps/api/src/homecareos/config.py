@@ -46,6 +46,21 @@ class Settings(BaseSettings):
     # — em qualquer outro ambiente a aplicação recusa subir (ver `main.py`).
     api_keys: str = ""
 
+    # Papéis que a `X-API-Key` carrega em `exigir_papel`, separados por vírgula
+    # (ADR 0007). **Vazio é o default e é restritivo**: a chave continua
+    # autenticando — chave errada é 401, como sempre — mas não satisfaz nenhuma
+    # checagem de papel, então toda rota de `/api/*` responde 403 para ela.
+    # Abrir a chave é uma decisão declarada aqui, integração a integração, e não
+    # o estado em que o sistema nasce.
+    #
+    # Nome de papel desconhecido **não** vira "sem papel" em silêncio: a
+    # aplicação recusa subir (`main._validar_configuracao_de_auth`). Um typo que
+    # degradasse para "sem papel" derrubaria a integração com 403 sem dizer por
+    # quê — e a validação não mora num `field_validator` desta classe porque
+    # `config` é a camada mais baixa e não conhece `Papel` (ver
+    # `auth/dependencies.papeis_da_chave_de_api`).
+    api_key_papeis: str = ""
+
     # Responsável atribuído a toda pendência que a classificação abre. Não é um
     # id de usuário porque a classificação é automática e não tem pessoa: a
     # atribuição a alguém de verdade acontece por reatribuição via

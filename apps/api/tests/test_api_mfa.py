@@ -51,6 +51,7 @@ from homecareos.main import app
 from tests.conftest import (
     AUTH_HEADERS,
     TEST_API_KEY,
+    TEST_API_KEY_PAPEIS,
     TEST_MFA_SECRET_KEY,
     TEST_MFA_SECRET_KEY_ANTIGA,
     configurar_chaves_mfa,
@@ -99,6 +100,7 @@ def api(settings: Settings) -> Iterator[TestClient]:
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
         update={
             "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
             "environment": "local",
             "login_atraso_base_segundos": 0.0,
             "login_atraso_maximo_segundos": 0.0,
@@ -396,6 +398,7 @@ def test_sondagem_do_segundo_fator_e_travada_e_nao_so_contada(
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
         update={
             "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
             "environment": "local",
             "login_atraso_base_segundos": 0.0,
             "login_atraso_maximo_segundos": 0.0,
@@ -741,6 +744,7 @@ def test_reemitir_e_travada_por_tentativa_e_nao_so_contada(
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
         update={
             "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
             "environment": "local",
             "login_atraso_base_segundos": 0.0,
             "login_atraso_maximo_segundos": 0.0,
@@ -800,6 +804,7 @@ def test_desativar_e_travada_por_tentativa_e_nao_so_contada(
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
         update={
             "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
             "environment": "local",
             "login_atraso_base_segundos": 0.0,
             "login_atraso_maximo_segundos": 0.0,

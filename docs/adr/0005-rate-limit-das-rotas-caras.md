@@ -91,8 +91,15 @@ As rotas públicas (`/login`, `/senha/esqueci`, `/senha/redefinir`) ficam **fora
 ADR: as duas primeiras já têm freio próprio (o de tentativas e o teto de três emissões por
 hora), e a terceira consome um token de uso único e curta validade.
 
-A chave de máquina (`X-API-Key`) recebe limite próprio, e mais folgado: é o cron da
-varredura de alertas, cujo padrão de uso é legítimo e repetitivo.
+A chave de máquina (`X-API-Key`) recebe limite próprio, e mais folgado: o padrão de uso
+de uma integração é legítimo e repetitivo, e um contador único para a operação inteira é
+justamente o que o limite por identidade existe para evitar.
+
+**Correção ([ADR 0007](0007-escopo-de-papel-da-chave-de-api.md)).** Este parágrafo dizia
+que a chave "é o cron da varredura de alertas". Não é: o cron chama
+`python -m homecareos.alerts.scan`, o módulo, e não faz requisição HTTP nenhuma — como a
+seção "A chave é a identidade, nunca o IP" do README já registrava, e como o comentário
+dos limites em `config.py` também. O limite folgado continua valendo pela razão acima.
 
 ### O escopo é a rota cara, não a API inteira
 

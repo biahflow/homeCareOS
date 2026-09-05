@@ -12,6 +12,12 @@ from homecareos.main import app
 TEST_API_KEY = "chave-de-teste"
 AUTH_HEADERS = {"X-API-Key": TEST_API_KEY}
 
+# Papéis que a chave de teste carrega (`API_KEY_PAPEIS`, ADR 0007). Os três,
+# porque é o que reproduz o acesso total que a chave tinha antes do escopo por
+# papel — o que estes módulos já assumiam quando foram escritos. Quem testa o
+# estreitamento em si declara o próprio valor (ver `test_autorizacao_papeis.py`).
+TEST_API_KEY_PAPEIS = "conferente,coordenador,gestor"
+
 # Chaves Fernet do processo de teste, que cifram `usuarios.mfa_secret` em
 # repouso (ADR 0008). Literais, e não `Fernet.generate_key()` a cada execução,
 # pelo mesmo motivo de `TEST_API_KEY`: um teste que falha precisa falhar igual
