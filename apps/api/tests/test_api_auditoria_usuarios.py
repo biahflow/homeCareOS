@@ -144,6 +144,36 @@ def usuarios(sessao: Session, rastro: list[uuid.UUID]) -> dict[Papel, Usuario]:
     return {papel: _novo_usuario(sessao, rastro, papel) for papel in Papel}
 
 
+@pytest.fixture
+def sem_outros_coordenadores_ativos(sessao: Session) -> Iterator[None]:
+    """Mesma fixture de `test_api_usuarios.py`, e pelo mesmo motivo.
+
+    A trava do último coordenador conta os coordenadores ativos do banco
+    inteiro, então o teste dela só mede alguma coisa se o coordenador que ele
+    cria for o único ativo. Restaura apenas os ids que desativou, para não
+    reativar conta que já estava desligada; SQL cru para não bater
+    `usuarios.updated_at` (`onupdate=func.now()`) numa conta que ninguém
+    alterou. A docstring longa, com o porquê de o padrão da issue #47 não
+    servir aqui, está no arquivo original.
+    """
+    ids = list(
+        sessao.scalars(
+            select(Usuario.id).where(
+                Usuario.papel == Papel.COORDENADOR.value, Usuario.ativo.is_(True)
+            )
+        ).all()
+    )
+    if ids:
+        sessao.execute(text("update usuarios set ativo = false where id = any(:ids)"), {"ids": ids})
+        sessao.commit()
+
+    yield
+
+    if ids:
+        sessao.execute(text("update usuarios set ativo = true where id = any(:ids)"), {"ids": ids})
+        sessao.commit()
+
+
 def _overrides(settings: Settings, **extra: object) -> Settings:
     base: dict[str, object] = {
         "api_keys": TEST_API_KEY,
@@ -433,7 +463,10 @@ def test_auto_desativacao_recusada_nao_gera_auditoria(
 
 
 def test_ultimo_coordenador_recusado_nao_gera_auditoria(
-    api: TestClient, sessao: Session, rastro: list[uuid.UUID]
+    api: TestClient,
+    sessao: Session,
+    rastro: list[uuid.UUID],
+    sem_outros_coordenadores_ativos: None,
 ) -> None:
     coordenador = _novo_usuario(sessao, rastro, Papel.COORDENADOR)
     outros = sessao.scalar(
@@ -444,7 +477,9 @@ def test_ultimo_coordenador_recusado_nao_gera_auditoria(
         )
     )
     assert outros is None, (
-        "este teste precisa que o coordenador criado seja o último ativo do banco"
+        "a fixture `sem_outros_coordenadores_ativos` deveria ter deixado o "
+        "coordenador do teste como o único ativo; apareceu outro depois do "
+        "setup dela, e sem isso o 409 abaixo não estaria sendo medido"
     )
 
     resposta = api.patch(

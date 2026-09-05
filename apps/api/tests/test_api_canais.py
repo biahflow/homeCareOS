@@ -34,6 +34,34 @@ esperam o WhatsApp ligado, e a falha apareceria no módulo errado. A estratégia
   teardown de `usuarios` apagar as contas. É por isso que `canais_restaurados`
   depende de `usuarios`: o pytest finaliza na ordem inversa do setup.
 
+## O estado de partida também é escrito, e não presumido
+
+O teardown resolvia metade do problema: o teste devolvia a tabela ao que ela
+era, mas continuava **presumindo** de onde partia. Num banco recém-semeado o
+e-mail nasce desligado, e ligá-lo era uma mudança de verdade; num banco onde
+alguém ligou o canal pela tela, o mesmo `PATCH` vira **no-op** — e no-op é
+comportamento correto e documentado (`canais_repository.definir_habilitado`
+não gera evento nem recarimba quando o valor enviado já é o atual). O carimbo e
+o evento que o teste esperava simplesmente não existem, e a suíte reprova por
+causa do histórico do banco, não do código.
+
+Por isso `estado_inicial_dos_canais` escreve a linha de partida antes do teste
+agir, devolvendo-a ao estado que a migration semeia (`atualizado_*` nulos): o
+`PATCH` sob teste volta a ser uma transição de verdade em qualquer máquina.
+Ele depende de `canais_restaurados`, então a fotografia da restauração é
+sempre do estado **anterior** ao teste — o banco de desenvolvimento continua
+saindo daqui como entrou.
+
+O padrão da issue #47 (`e325814`: a fixture cria a própria entidade com
+identificador único e o teste filtra por ela) não serve aqui — `canais_alerta`
+tem duas linhas fixas, uma por canal do enum, e não há entidade exclusiva a
+criar. A forma mais próxima em espírito é esta: em vez de possuir a entidade, o
+teste possui o estado dela durante a sua execução.
+
+As asserções sobre a auditoria já eram recorte fechado e continuam como
+estavam: todas filtram pelo `usuario_id` do coordenador do próprio teste (um
+usuário novo a cada execução), então evento de terceiro nunca entra na conta.
+
 Nenhuma mensagem sai daqui: não há credencial de uazapi nem de SMTP, e os
 testes que exercitam a varredura o fazem sem destinatário configurado.
 """
@@ -41,7 +69,7 @@ testes que exercitam a varredura o fazem sem destinatário configurado.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime
 
 import pytest
@@ -166,6 +194,42 @@ def canais_restaurados(sessao: Session, usuarios: dict[Papel, Usuario]) -> Itera
     sessao.commit()
 
 
+@pytest.fixture
+def estado_inicial_dos_canais(
+    sessao: Session, canais_restaurados: None
+) -> Callable[[dict[Canal, bool]], None]:
+    """Escreve o estado de partida do teste, em vez de presumi-lo. Ver o módulo.
+
+    Devolve cada linha pedida ao estado que a migration semeia: o `habilitado`
+    escolhido e o trio `atualizado_em`/`atualizado_por`/`atualizado_por_usuario_id`
+    nulo — "ninguém decidiu nada ainda", que é o que
+    `test_carimbo_e_ator_do_estado_atual_andam_sempre_juntos` descreve como o
+    estado semeado. Sem zerar o carimbo, um teste sobre autoria poderia passar
+    lendo a decisão de outra pessoa.
+
+    Escreve por SQL cru e commita porque quem lê depois é o endpoint, na sessão
+    dele: sem o commit a mudança ficaria presa nesta transação e a requisição
+    seguinte continuaria vendo o estado antigo.
+
+    Depende de `canais_restaurados` para garantir a ordem: a fotografia da
+    restauração é tirada no setup dele, portanto **antes** desta escrita.
+    """
+
+    def definir(estado: dict[Canal, bool]) -> None:
+        for canal, habilitado in estado.items():
+            sessao.execute(
+                text(
+                    "update canais_alerta set habilitado = :habilitado, "
+                    "atualizado_em = null, atualizado_por = null, "
+                    "atualizado_por_usuario_id = null where canal = :canal"
+                ),
+                {"habilitado": habilitado, "canal": canal.value},
+            )
+        sessao.commit()
+
+    return definir
+
+
 def _overrides(settings: Settings, **extra: object) -> Settings:
     base: dict[str, object] = {
         "api_keys": TEST_API_KEY,
@@ -252,11 +316,12 @@ def test_o_patch_carimba_quem_decidiu_e_quando(
     sessao: Session,
     usuarios: dict[Papel, Usuario],
     clientes: dict[Papel, TestClient],
-    canais_restaurados: None,
+    estado_inicial_dos_canais: Callable[[dict[Canal, bool]], None],
 ) -> None:
     """Saber que o canal está desligado sem saber desde quando não ajuda numa
     investigação — é o par que evita ter de paginar a auditoria para a pergunta
     mais comum."""
+    estado_inicial_dos_canais({Canal.EMAIL: False})
     coordenador = usuarios[Papel.COORDENADOR]
 
     resposta = clientes[Papel.COORDENADOR].patch(
@@ -439,11 +504,14 @@ def test_toda_mudanca_gera_evento_com_ator_canal_de_para_e_quando(
     sessao: Session,
     usuarios: dict[Papel, Usuario],
     clientes: dict[Papel, TestClient],
-    canais_restaurados: None,
+    estado_inicial_dos_canais: Callable[[dict[Canal, bool]], None],
 ) -> None:
     """**Critério 5 do handoff.** Quem desliga um canal silencia a operação, e é
     isso que torna a auditoria obrigatória: sem ela, "por que ninguém foi
     avisado?" é uma pergunta sem resposta possível."""
+    # Desligado é o estado de partida que os dois eventos esperados exigem: com
+    # o e-mail já ligado, o primeiro `PATCH` seria no-op e sobraria um evento só.
+    estado_inicial_dos_canais({Canal.EMAIL: False})
     coordenador = usuarios[Papel.COORDENADOR]
     alvo = f"/api/alertas/canais/{Canal.EMAIL.value}"
 
@@ -471,11 +539,14 @@ def test_mudanca_que_nao_muda_nada_nao_gera_evento(
     sessao: Session,
     usuarios: dict[Papel, Usuario],
     clientes: dict[Papel, TestClient],
-    canais_restaurados: None,
+    estado_inicial_dos_canais: Callable[[dict[Canal, bool]], None],
 ) -> None:
     """Ligar um canal já ligado não é evento — e não pode reescrever
     `atualizado_por`, que responde "quem decidiu o estado atual" e não "quem
     clicou por último"."""
+    # O no-op só é observável depois de uma mudança de verdade: é ela que produz
+    # o carimbo e o evento únicos que a segunda chamada não pode mexer.
+    estado_inicial_dos_canais({Canal.EMAIL: False})
     coordenador = usuarios[Papel.COORDENADOR]
     alvo = f"/api/alertas/canais/{Canal.EMAIL.value}"
     clientes[Papel.COORDENADOR].patch(alvo, json={"habilitado": True})
@@ -505,11 +576,22 @@ def test_mudanca_que_nao_muda_nada_nao_gera_evento(
 
 
 def test_chamada_por_api_key_e_auditada_com_ator_nulo_e_rotulo_api(
-    sessao: Session, api: TestClient, canais_restaurados: None
+    sessao: Session,
+    api: TestClient,
+    estado_inicial_dos_canais: Callable[[dict[Canal, bool]], None],
 ) -> None:
     """**Critério 6 do handoff.** `exigir_papel` deixa a chave passar em qualquer
     papel, então uma chamada de máquina pode mudar canal. Forjar um id de usuário
-    nesse caso apontaria a auditoria para quem não agiu."""
+    nesse caso apontaria a auditoria para quem não agiu.
+
+    O ator da chave é nulo, então este é o único teste do arquivo cuja busca não
+    pode filtrar pelo `usuario_id` do próprio teste — ele lê o evento mais
+    recente de ator nulo. Sem o estado de partida escrito, num banco onde o
+    e-mail já estivesse ligado o `PATCH` seria no-op e a asserção passaria lendo
+    um evento que **outra** chamada de máquina gravou.
+    """
+    estado_inicial_dos_canais({Canal.EMAIL: False})
+
     resposta = api.patch(
         f"/api/alertas/canais/{Canal.EMAIL.value}", json={"habilitado": True}, headers=AUTH_HEADERS
     )
@@ -535,10 +617,14 @@ def test_chamada_por_api_key_e_auditada_com_ator_nulo_e_rotulo_api(
 def test_a_leitura_da_auditoria_filtra_por_ator_canal_e_estado(
     usuarios: dict[Papel, Usuario],
     clientes: dict[Papel, TestClient],
-    canais_restaurados: None,
+    estado_inicial_dos_canais: Callable[[dict[Canal, bool]], None],
 ) -> None:
     """Os três filtros da rota, e o mais importante deles: `habilitado=false`
     responde "quem silenciou a operação?"."""
+    # Os três `PATCH` abaixo precisam ser três mudanças de verdade para virarem
+    # os três eventos que os filtros recortam: e-mail desligado (para poder
+    # ligar e desligar) e WhatsApp ligado (para poder desligar).
+    estado_inicial_dos_canais({Canal.EMAIL: False, Canal.WHATSAPP: True})
     coordenador = usuarios[Papel.COORDENADOR]
     cliente = clientes[Papel.COORDENADOR]
     cliente.patch(f"/api/alertas/canais/{Canal.EMAIL.value}", json={"habilitado": True})
