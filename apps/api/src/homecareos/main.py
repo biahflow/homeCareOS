@@ -42,6 +42,7 @@ from homecareos.auth.router import router as auth_router
 from homecareos.auth.schema import Papel
 from homecareos.auth.usuarios_router import router as usuarios_router
 from homecareos.config import Settings, get_settings
+from homecareos.db import cifra
 from homecareos.intake.router import router as intake_router
 from homecareos.reports.router import router as relatorios_router
 from homecareos.rules.router import router as rules_router
@@ -86,9 +87,52 @@ def _validar_configuracao_de_auth(settings: Settings) -> None:
     )
 
 
+def _validar_configuracao_de_mfa(settings: Settings) -> None:
+    """Avisa quando não há chave para cifrar o segredo TOTP — e **sobe assim mesmo**.
+
+    Aqui a decisão é diferente da de `_validar_configuracao_de_auth`, e a
+    diferença é o alcance da falta. Sem `API_KEYS` fora de `local`, toda rota de
+    `/api/*` fica sem uma das credenciais: recusar subir é proporcional. Sem
+    `MFA_SECRET_KEYS`, o que para é **um recurso opcional por pessoa** — quem
+    não ativou o segundo fator não é afetado, e quem ativou continua logando,
+    porque o segredo já cifrado continua sendo lido pelas chaves que existirem.
+    Derrubar a API inteira por causa disso seria trocar uma indisponibilidade
+    parcial por uma total.
+
+    O que **não** acontece é degradar em silêncio: `POST /api/auth/mfa/iniciar`
+    responde 503 e nada é gravado em claro (ADR 0008, `db/cifra.py`).
+
+    O warning sai em qualquer ambiente, e diz o efeito em vez de só nomear a
+    variável: fora de `local` isto é quase certamente configuração faltando, e
+    o texto precisa ser reconhecível por quem lê o log do deploy sem conhecer o
+    ADR.
+
+    Chave **presente e malformada** é outro caso e recusa subir: quem escreveu a
+    variável quis cifrar, e tratar um typo como "sem chave" desligaria a cifra
+    justamente para quem pediu por ela. Quem levanta é `db/cifra.py`; aqui a
+    chamada existe para o erro aparecer no boot, e não na primeira pessoa que
+    tentar ativar o MFA.
+
+    A leitura é de `settings.mfa_secret_keys`, e não de `cifra_disponivel()`,
+    pela mesma razão que `create_app` é uma factory: o teste precisa validar
+    `Settings` arbitrárias sem depender do ambiente do processo.
+    """
+    if cifra.cifrador_de(settings.mfa_secret_keys) is not None:
+        return
+    logger.warning(
+        "settings.mfa_secret_keys está vazio em environment=%r: o segredo TOTP não tem "
+        "como ser cifrado em repouso, então POST /api/auth/mfa/iniciar vai responder 503 "
+        "e ninguém consegue ATIVAR o segundo fator. Quem já o tem ativo não é afetado "
+        "enquanto a chave que cifrou o segredo dele estiver na lista. Configure "
+        "MFA_SECRET_KEYS no .env (ADR 0008) e guarde a chave em backup separado do banco.",
+        settings.environment,
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     _validar_configuracao_de_auth(resolved_settings)
+    _validar_configuracao_de_mfa(resolved_settings)
 
     app = FastAPI(
         title="HomeCareOS API",

@@ -141,6 +141,19 @@ class Settings(BaseSettings):
     # Quantos códigos de recuperação a ativação gera. São a única saída de quem
     # perdeu o celular, e são mostrados uma única vez.
     mfa_codigos_recuperacao: int = 8
+    # Chaves Fernet que cifram `usuarios.mfa_secret` em repouso (ADR 0008),
+    # separadas por vírgula: **a primeira cifra, todas decifram** — a mesma
+    # forma de `api_keys`, e pela mesma razão (rotação sem downtime).
+    #
+    # Vazio é o default e a aplicação SOBE assim, porque MFA é opcional por
+    # pessoa e derrubar a API inteira por causa de um recurso opcional é
+    # desproporcional. O que não acontece é degradar para texto claro:
+    # `POST /api/auth/mfa/iniciar` responde 503 e nada é gravado (ver
+    # `db/cifra.py` e `main._validar_configuracao_de_mfa`).
+    #
+    # Esta chave é material de BACKUP tão crítico quanto o banco, e precisa
+    # ficar separada dele: guardada junto com o dump, ela não protege de nada.
+    mfa_secret_keys: str = ""
 
     # Gateway de WhatsApp (uazapi). Base URL vazia OU token vazio desabilita
     # todo o envio de alerta — o sistema segue funcionando, só não notifica.

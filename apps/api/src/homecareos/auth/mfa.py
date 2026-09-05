@@ -16,10 +16,14 @@ Duas escolhas que não são estilo:
 - **`hmac.compare_digest`, nunca `==`.** É comparação de credencial. O `==` de
   string curta vaza o prefixo certo por tempo de resposta, e são só seis
   dígitos.
-- **O segredo fica em claro no banco**, e a limitação é declarada em vez de
-  maquiada: não há KMS neste projeto, e "criptografar" com uma chave guardada no
-  mesmo `.env` que acompanha o dump seria teatro. Ver a migration
-  `e1f4a7c92b58` e o README.
+- **O segredo é base32 aqui e cifrado no banco.** Este módulo trabalha sempre
+  com o segredo em claro — é o formato que `pyotp` deriva e que o app
+  autenticador lê, e mudá-lo quebraria `uri_otpauth` e todo QR code já
+  escaneado. A cifra em repouso (ADR 0008) vive na fronteira do banco, no tipo
+  da coluna `usuarios.mfa_secret` (`db/cifra.SegredoCifrado`), e por isso
+  nenhuma linha daqui precisou mudar por causa dela. O que ela fecha — dump,
+  backup, réplica, acesso de DBA — e o que não fecha — host comprometido —
+  está em `db/cifra.py` e no ADR.
 """
 
 from __future__ import annotations

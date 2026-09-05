@@ -33,6 +33,14 @@ dependencies = [
   # e o anti-replay são nossos, em `auth/mfa.py`, porque `TOTP.verify` devolve
   # booleano e o passo aceito é justamente o que precisamos guardar.
   "pyotp>=2.9,<3",
+  # Cifra do segredo TOTP em repouso (ADR 0008). `Fernet`/`MultiFernet`:
+  # AES-128-CBC com HMAC-SHA256 e timestamp, autenticado — não é primitiva
+  # solta, é uma construção fechada que não deixa escolher modo nem IV. O
+  # `MultiFernet` é o que permite rotacionar a chave sem downtime, como
+  # `API_KEYS` já faz para a chave de máquina. É dependência NOVA de verdade —
+  # não estava no `uv.lock` nem como transitiva —, então a imagem do Compose
+  # precisa de `docker compose --profile tools build` antes do próximo `up`.
+  "cryptography>=44,<47",
 ]
 
 [dependency-groups]
