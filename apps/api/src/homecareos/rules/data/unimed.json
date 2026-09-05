@@ -5,7 +5,7 @@
     "condicao": {"tipo": "formato", "regex": "COREN[-/ ]?[A-Za-z]{2}[\\s.:\\-]*\\d{4,7}[\\s.\\-]*([A-Za-z]{2,5})?"},
     "acao": "rejeitar",
     "motivo_glosa": "Número do Coren fora do formato exigido pela operadora (UF e categoria explícitas).",
-    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-COREN-FORMATO desta mesma operadora, que ela endurece.",
+    "fonte": "A CONFIRMAR — formato do número do Coren CONFIRMADO em norma pública: Resolução Cofen 545/2017, art. 2º, manda anotar com a sigla COREN, a sigla da UF onde está sediado o Conselho Regional em que o profissional se inscreveu (não a UF do atendimento) e o número de inscrição, separados por hífen. https://www.cofen.gov.br/resolucao-cofen-no-05452017/ (consultado em 05/09/2026). A norma obriga o profissional de enfermagem a se identificar assim; ela não define o que a Unimed Rio glosa, e ativar esta regra depende do manual do prestador da Unimed Rio para atenção domiciliar, que não é público. O que continua A CONFIRMAR é a ação: glosar por desvio de formato é regra desse manual. Enquanto isso, a regra genérica TISS-EVOL-COREN-FORMATO cobre o campo com sinalizar. Nasce ativo=false: ativar somente depois de conferir a exigência de glosa no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-COREN-FORMATO desta mesma operadora, que ela endurece.",
     "escopo": "operadora",
     "ativo": false
   },
@@ -15,7 +15,7 @@
     "condicao": {"tipo": "se", "quando": {"tipo": "verdadeiro", "campo": "carimbo_presente"}, "entao": {"tipo": "verdadeiro", "campo": "carimbo_legivel"}},
     "acao": "rejeitar",
     "motivo_glosa": "Carimbo ilegível: a operadora devolve o documento em vez de apenas sinalizar.",
-    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-CARIMBO-LEGIVEL desta mesma operadora, que ela endurece.",
+    "fonte": "A CONFIRMAR — obrigatoriedade do carimbo CONFIRMADA em norma pública: Resolução Cofen 545/2017, art. 2º §1º e §2º (os dados constam do carimbo pessoal e intransferível, com assinatura ou rubrica sobre eles) e art. 5º, III (obrigatório em todo documento firmado no exercício profissional, em cumprimento ao Código de Ética — hoje Resolução Cofen 564/2017). https://www.cofen.gov.br/resolucao-cofen-no-05452017/ (consultado em 05/09/2026). A norma obriga o profissional a carimbar; ela não define o que a Unimed Rio glosa, e ativar esta regra depende do manual do prestador da Unimed Rio para atenção domiciliar, que não é público. A legibilidade do carimbo é inferência razoável deste time (carimbo ilegível não cumpre a função de identificar), não texto da norma. O que continua A CONFIRMAR é a ação: glosar por carimbo ilegível é regra desse manual. Enquanto isso, a regra genérica TISS-EVOL-CARIMBO-LEGIVEL cobre o campo com sinalizar. Nasce ativo=false: ativar somente depois de conferir a exigência de glosa no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-CARIMBO-LEGIVEL desta mesma operadora, que ela endurece.",
     "escopo": "operadora",
     "ativo": false
   },
@@ -25,7 +25,7 @@
     "condicao": {"tipo": "verdadeiro"},
     "acao": "rejeitar",
     "motivo_glosa": "Sem assinatura do paciente ou responsável, a operadora não aceita a comprovação da visita.",
-    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-ASSINATURA-RESPONSAVEL desta mesma operadora, que ela endurece.",
+    "fonte": "A CONFIRMAR — exigência NÃO confirmada em norma pública (consultado em 05/09/2026): a Resolução Cofen 545/2017 trata da identificação do profissional (carimbo e registro), não da assinatura do paciente ou responsável — não há norma de conselho que decida isto. A exigência existe na prática do setor como comprovação de execução (ficha de produtividade, guia de faturamento assinada), mas a norma do Cofen obriga o profissional, não define o que a Unimed Rio glosa, e ativar esta regra depende do manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Enquanto isso, a regra genérica TISS-EVOL-ASSINATURA-RESPONSAVEL cobre o campo com sinalizar. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-ASSINATURA-RESPONSAVEL desta mesma operadora, que ela endurece.",
     "escopo": "operadora",
     "ativo": false
   },
@@ -35,7 +35,7 @@
     "condicao": {"tipo": "dentro_da_competencia"},
     "acao": "rejeitar",
     "motivo_glosa": "Atendimento fora da competência do lote: a operadora glosa em vez de reprocessar.",
-    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-DATA-COMPETENCIA desta mesma operadora, que ela endurece.",
+    "fonte": "A CONFIRMAR — exigência NÃO confirmada em norma pública (consultado em 05/09/2026): registro de enfermagem datado é prática consolidada, mas o vínculo entre a data do atendimento e a competência do lote é regra de faturamento da operadora, não norma de conselho — a norma do Cofen obriga o profissional a registrar a data, não define o que a Unimed Rio glosa por competência. Ativar esta regra depende do manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Enquanto isso, a regra genérica TISS-EVOL-DATA-COMPETENCIA cobre o campo com sinalizar. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-DATA-COMPETENCIA desta mesma operadora, que ela endurece.",
     "escopo": "operadora",
     "ativo": false
   },
@@ -45,7 +45,7 @@
     "condicao": {"tipo": "presente"},
     "acao": "rejeitar",
     "motivo_glosa": "Material faturado sem registro na evolução.",
-    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-MATERIAIS desta mesma operadora, que ela endurece.",
+    "fonte": "A CONFIRMAR — exigência NÃO confirmada em norma pública (consultado em 05/09/2026): nenhuma norma pública de conselho profissional exige lista de materiais na evolução; é exigência de faturamento, específica de contrato — a norma do Cofen obriga o profissional quanto ao registro clínico, não define o que a Unimed Rio glosa por material. Ativar esta regra depende do manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Enquanto isso, a regra genérica TISS-EVOL-MATERIAIS cobre o campo com sinalizar. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-MATERIAIS desta mesma operadora, que ela endurece.",
     "escopo": "operadora",
     "ativo": false
   },
@@ -55,7 +55,7 @@
     "condicao": {"tipo": "formato", "regex": "\\S+\\s+\\S.*"},
     "acao": "sinalizar",
     "motivo_glosa": "Nome do profissional aparentemente incompleto (só um termo): conferir antes do envio.",
-    "fonte": "A CONFIRMAR — candidata derivada do padrão TISS/ANS e da prática do setor; NÃO verificada no manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta. Ao ativar, avalie desativar a regra genérica TISS-EVOL-PROFISSIONAL-NOME desta mesma operadora, que ela endurece.",
+    "fonte": "A CONFIRMAR — exigência NÃO confirmada em norma pública (consultado em 05/09/2026): a norma do Cofen obriga o profissional a se identificar, não define o que a Unimed Rio glosa por nome incompleto, e ativar esta regra depende do manual do prestador da Unimed Rio para atenção domiciliar, que não é público. Achado registrado: esta candidata é mais fraca que a genérica que deveria endurecer — TISS-EVOL-PROFISSIONAL-NOME já está ativa com acao=rejeitar, enquanto esta é sinalizar. Ativá-la como está afrouxaria a conferência em vez de endurecê-la; se um dia for ativada, a ação precisa ser revista antes. Nasce ativo=false: ativar somente depois de conferir a exigência no manual vigente e registrar aqui a seção e a data da consulta.",
     "escopo": "operadora",
     "ativo": false
   }
