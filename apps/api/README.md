@@ -551,6 +551,46 @@ SMTP_USAR_TLS=true
 FRONTEND_BASE_URL=https://app.exemplo.com
 ```
 
+#### Testar a configuração de SMTP (issue #50)
+
+Não há como saber se uma credencial de SMTP nova funciona sem disparar um
+fluxo real (recuperação de senha, ou a varredura de alertas) — e quem
+configura errado só descobre quando um alerta crítico não chega. O comando de
+fumaça monta o provider pelo **mesmo caminho** que a aplicação usa
+(`get_email_provider(get_settings())`) e envia um e-mail de teste de verdade:
+
+```bash
+# recomendado — roda dentro do container, que é onde a configuração de
+# produção precisa provar que funciona:
+docker compose run --rm api-email-teste --para alguem@dominio.com
+
+# local, a partir da RAIZ do repositório (ver a pegadinha do .env abaixo):
+cd apps/api && uv run python -m homecareos.mailer.cli --para alguem@dominio.com
+```
+
+`--assunto` e `--corpo` são opcionais, com defaults que identificam a mensagem
+como teste do HomeCareOS. Saída:
+
+- **SMTP não configurado** (`smtp_host` ou `smtp_remetente` vazio): mensagem no
+  stderr dizendo qual campo falta, nada é enviado, código de saída **1**. Não é
+  tratado como sucesso silencioso — é justamente o desfecho que este comando
+  existe para tornar visível.
+- **Sucesso**: stdout traz host, porta, remetente (conferir se o relay
+  preservou o `From` é metade do motivo de rodar este comando), destinatário e
+  se autenticou com usuário — nunca a senha —, código **0**.
+- **Falha de envio** (recusa do servidor): a mensagem do servidor no stderr,
+  sem a senha (o provider já mascara — ver `mailer/smtp.py`), código **1**.
+
+**A mesma pegadinha do `.env` que já morde o alembic** (ver "Cifra do segredo
+em repouso", acima) morde este comando: `Settings` lê o `.env` do diretório de
+**trabalho**, e o `.env` do projeto fica na raiz do repositório. Rodando de
+dentro de `apps/api` sem exportar as variáveis, o `.env` da raiz não é lido e o
+provider vira `None` **silenciosamente** — o comando diria "SMTP não
+configurado" numa máquina onde ele está perfeitamente configurado. Pelo
+Compose o problema não existe (o `env_file` aponta para o `.env` da raiz), o
+que é mais uma razão para preferir esse caminho; rodando à mão, invoque da raiz
+do repositório ou exporte as variáveis `SMTP_*` antes.
+
 #### Limitações honestas
 
 - **Sem SMTP configurado, a recuperação fica desligada.** `SMTP_HOST` **ou**
