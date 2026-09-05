@@ -142,6 +142,37 @@ services:
       postgres:
         condition: service_healthy
 
+  # Fumaça de configuração SMTP (issue #50):
+  # `docker compose run --rm api-email-teste --para alguem@dominio`. Fica em
+  # `profiles: ["tools"]` como as demais ferramentas — não sobe com `up`.
+  #
+  # `entrypoint` (e não `command`, como os serviços acima) porque este comando
+  # precisa receber `--para`/`--assunto`/`--corpo` na chamada de
+  # `docker compose run`: com `command` fixo, os argumentos do `run`
+  # substituiriam o comando inteiro em vez de se somar a ele. O
+  # `docker-entrypoint.sh` do Dockerfile continua na cadeia de propósito —
+  # sobrescrever seria perder a checagem que recusa arrancar com a imagem
+  # desatualizada em relação ao uv.lock — e por isso ele entra aqui de novo,
+  # explicitamente, seguido do módulo; sem `command` nenhum, os argumentos
+  # passados ao `run` chegam como `CMD` e são anexados ao fim do `entrypoint`.
+  api-email-teste:
+    build:
+      context: ./apps/api
+    profiles: ["tools"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://homecareos:homecareos@postgres:5432/homecareos
+      PYTHONPATH: /app/src
+    volumes:
+      - ./apps/api/src:/app/src
+      - ./apps/api/uv.lock:/app/uv.lock:ro
+    entrypoint: ["docker-entrypoint.sh", "python", "-m", "homecareos.mailer.cli"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Expurgo por retenção de tentativas_login, tokens_recuperacao e
   # alertas_enviados (issue #39). Fica em `profiles: ["tools"]` como as demais
   # ferramentas: em produção quem a chama é um cron (`docker compose run --rm
