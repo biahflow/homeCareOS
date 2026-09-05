@@ -50,6 +50,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from homecareos.api.auth import MENSAGEM_CREDENCIAL_INVALIDA
 from homecareos.auth import mfa, protecao, recuperacao, senhas, sessoes
@@ -757,9 +758,12 @@ def confirmar_mfa(
     summary="Desliga o segundo fator (exige senha E código atual)",
     description=(
         "Exige os **dois** fatores no corpo: senha e código. Limpa o segredo, "
-        "a flag, o passo e os códigos de recuperação. Senha ou código errado: "
-        "422 com a mesma mensagem, e a tentativa conta para o bloqueio por "
-        "força bruta. MFA não ativado: 409."
+        "a flag, o passo e os códigos de recuperação. O `codigo` é o do app "
+        "autenticador; quando o segredo TOTP está ilegível no servidor (chave "
+        "de cifra perdida ou rotacionada errado, ADR 0008), um **código de "
+        "recuperação** é aceito no lugar dele. Senha ou código errado: 422 com "
+        "a mesma mensagem, e a tentativa conta para o bloqueio por força bruta. "
+        "MFA não ativado: 409."
     ),
 )
 def desativar_mfa(
@@ -800,13 +804,44 @@ def desativar_mfa(
     nenhuma e não custa Argon2, e responder 429 a quem nem tem segundo fator
     para desligar só esconderia o erro real de quem integra.
 
+    **Segredo ilegível não é "MFA não ativado", e desde a issue #39 não responde
+    mais 409.** Quando a chave de `MFA_SECRET_KEYS` se perde ou uma rotação
+    remove a antiga cedo demais, `db/cifra.SegredoCifrado` degrada a leitura
+    para `None` (ADR 0008) — de propósito, para o código de recuperação
+    continuar logando a pessoa. Com a guarda antiga (`mfa_secret is None` →
+    409), quem entrava pelo código de recuperação **não conseguia desligar o
+    próprio MFA**: ficava com um segundo fator quebrado e sem saída pela API, e
+    ainda recebia uma mensagem que mentia para ela — o segundo fator *está*
+    ativado.
+
+    Nesse estado a rota aceita **senha + código de recuperação** no lugar de
+    senha + TOTP. Continuam sendo dois fatores, e não há degradação: o código de
+    recuperação já é a credencial que pula o segundo fator no login
+    (`/mfa/verificar`), então quem tem senha e código de recuperação já entra na
+    conta.
+
+    `mfa_ativado=True` com a coluna vazia **é** diagnóstico de segredo ilegível,
+    e não de "nunca iniciado": os dois são limpos no mesmo commit aqui embaixo,
+    e `/mfa/confirmar` só liga a flag com segredo gravado — a flag ligada com
+    coluna vazia não é estado alcançável pelo fluxo normal.
+
+    **Fica de fora, e é o caso de borda desta rota:** quem perder a chave **e**
+    esgotar os códigos de recuperação continua trancado. Não existe rota
+    administrativa que desative o MFA de terceiro (`auth/usuarios_router.py` não
+    expõe nada de MFA, por decisão do ADR 0004), então a saída é intervenção
+    direta no banco. Criar essa rota é decisão de outra natureza — quem
+    administra usuário passaria a poder desligar o segundo fator de outra
+    pessoa —, e não foi tomada aqui.
+
     O segredo é apagado junto com a flag, e não guardado "para o caso de
     religar": segredo órfão de MFA desligado só serve para vazar num dump
     depois. Religar é `POST /mfa/iniciar` de novo, com um segredo novo.
     """
     agora = datetime.now(UTC)
     usuario = _usuario_da_sessao(principal, session)
-    if not usuario.mfa_ativado or usuario.mfa_secret is None:
+    # Só a flag. Segredo ilegível cai nos caminhos de baixo, não aqui — ver a
+    # docstring.
+    if not usuario.mfa_ativado:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=MENSAGEM_MFA_NAO_ATIVO,
@@ -820,14 +855,32 @@ def desativar_mfa(
         raise _bloqueado(bloqueio)
 
     senha_ok = senhas.verificar(usuario.senha_hash, corpo.senha)
-    passo = mfa.verificar_codigo(
-        usuario.mfa_secret,
-        corpo.codigo,
-        agora=agora,
-        janela=settings.mfa_janela_passos,
-        ultimo_passo=usuario.mfa_ultimo_passo,
-    )
-    if not senha_ok or passo is None:
+    if usuario.mfa_secret is not None:
+        # Caminho de sempre. Os dois são conferidos mesmo quando o primeiro
+        # falha: sair no primeiro erro faria o tempo de resposta dizer se a
+        # senha estava certa, e verificar TOTP não consome nada.
+        passo = mfa.verificar_codigo(
+            usuario.mfa_secret,
+            corpo.codigo,
+            agora=agora,
+            janela=settings.mfa_janela_passos,
+            ultimo_passo=usuario.mfa_ultimo_passo,
+        )
+        aceito = senha_ok and passo is not None
+    else:
+        # Segredo ilegível: o código de recuperação faz o papel do TOTP. Aqui a
+        # ordem é o oposto da de cima, e é deliberada:
+        # `mfa.consumir_codigo_recuperacao` **consome** (uso único), então
+        # conferi-lo antes da senha faria uma senha digitada errada queimar um
+        # código de uma lista finita — a última reserva de quem já está sem o
+        # segundo fator. O que isso custa é o tempo de resposta distinguir senha
+        # certa de senha errada; é troca consciente, e não entrega capacidade
+        # nova: `POST /api/auth/login` já responde 200 ou 401 para a mesma
+        # pergunta, sob o mesmo freio de força bruta. O que **não** muda é o que
+        # quem chama observa: os dois desfechos são o mesmo 422 abaixo.
+        aceito = senha_ok and mfa.consumir_codigo_recuperacao(session, usuario.id, corpo.codigo)
+
+    if not aceito:
         protecao.registrar_tentativa(session, email=usuario.email, ip=ip, sucesso=False)
         session.commit()
         raise HTTPException(
@@ -838,6 +891,13 @@ def desativar_mfa(
     usuario.mfa_ativado = False
     usuario.mfa_secret = None
     usuario.mfa_ultimo_passo = None
+    # Com o segredo ilegível, `usuario.mfa_secret` **já lê `None`** (a degradação
+    # de `db/cifra.SegredoCifrado`), e atribuir `None` sobre `None` não é
+    # mudança nenhuma para o SQLAlchemy: a coluna ficaria fora do UPDATE e o
+    # token que não abre continuaria no banco depois de o MFA ter sido
+    # desligado — exatamente o segredo órfão que o parágrafo acima recusa
+    # guardar. `flag_modified` é o que força o `NULL` a acontecer de verdade.
+    flag_modified(usuario, "mfa_secret")
     session.execute(
         delete(CodigoRecuperacaoMfa).where(CodigoRecuperacaoMfa.usuario_id == usuario.id)
     )
@@ -919,6 +979,15 @@ def reemitir_codigos_mfa(
     credencial nenhuma e não custa Argon2, e quem chama já sabe o estado da
     própria conta — responder 429 a quem nem tem o que reemitir só esconderia o
     erro real de quem integra.
+
+    **Segredo ilegível continua respondendo 409 aqui, e isso não é esquecimento.**
+    `/mfa/desativar` passou a aceitar senha + código de recuperação nesse estado
+    (issue #39); esta rota **não**, e a diferença é o que cada uma entrega. Com o
+    segredo ilegível o segundo fator está quebrado: emitir oito códigos novos
+    para um MFA que não gera código nenhum não devolve o app autenticador a
+    ninguém — só produz mais credencial de bypass para uma conta que já não tem
+    fator para pular. O caminho é desligar (`/mfa/desativar`) e religar
+    (`/mfa/iniciar`), com segredo novo e lista nova.
     """
     agora = datetime.now(UTC)
     usuario = _usuario_da_sessao(principal, session)

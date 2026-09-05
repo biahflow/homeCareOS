@@ -62,9 +62,17 @@ def _validar_configuracao_de_auth(settings: Settings) -> None:
     um estado de desenvolvimento válido, é uma configuração que degradaria em
     silêncio para "a chave não abre nada" (ver
     `auth/dependencies.papeis_da_chave_de_api`).
+
+    `API_KEY_PAPEIS` **vazio com chave configurada** é o terceiro caso, e é só um
+    `warning`: vazio é o default do ADR 0007 e é estado legítimo — a chave
+    autentica e não abre rota de papel restrito nenhuma. O aviso existe porque
+    esse estado e o typo produzem o mesmo sintoma em runtime (403 em tudo), e o
+    typo era o único dos dois com diagnóstico. Quem esquecer a variável num
+    ambiente novo não tem como descobrir pela resposta: `MENSAGEM_SEM_PERMISSAO`
+    não nomeia papel, de propósito.
     """
     try:
-        papeis_da_chave_de_api(settings)
+        papeis_da_chave = papeis_da_chave_de_api(settings)
     except ValueError as exc:
         # Vira `RuntimeError` para que a recusa de subir tenha um tipo só, o
         # mesmo da chave ausente logo abaixo. A mensagem original é preservada:
@@ -73,6 +81,20 @@ def _validar_configuracao_de_auth(settings: Settings) -> None:
 
     tem_chave = bool(settings.api_keys.strip())
     if tem_chave:
+        if not papeis_da_chave:
+            # Só nesta combinação. Sem `api_keys` a chave nem existe, e avisar
+            # que ela não abre nada seria ruído em cima do aviso que esse caso
+            # já tem (logo abaixo, ou a recusa de subir fora de `local`).
+            logger.warning(
+                "settings.api_keys está configurado e settings.api_key_papeis está "
+                "vazio: a X-API-Key autentica, mas não abre rota de papel restrito "
+                "nenhuma — toda chamada de máquina a uma rota protegida por papel vai "
+                "responder 403, e a resposta não diz que falta configuração. Vazio é o "
+                "default do ADR 0007 e pode ser proposital; se há integração "
+                "máquina-a-máquina neste ambiente, declare os papéis dela em "
+                "API_KEY_PAPEIS (API_KEY_PAPEIS=conferente,coordenador,gestor reproduz "
+                "o acesso que a chave tinha antes do ADR 0007)."
+            )
         return
     if settings.environment != "local":
         raise RuntimeError(

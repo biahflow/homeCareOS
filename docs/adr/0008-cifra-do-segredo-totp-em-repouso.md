@@ -177,6 +177,21 @@ porque a alternativa (deixar a rota aceitar segredo ilegível) exigiria distingu
 de "MFA ilegível" em todo o fluxo. Fica registrado como trabalho futuro, não como
 comportamento desejado.
 
+**Resolvido pela issue #39, para `/mfa/desativar`.** A distinção temida acabou custando
+uma linha: `mfa_ativado=True` com a coluna vazia **é** "MFA ilegível", porque os dois
+campos são limpos no mesmo commit da desativação e `/mfa/confirmar` só liga a flag com
+segredo gravado — a flag ligada com coluna vazia não é estado alcançável pelo fluxo
+normal. Nesse estado a rota aceita **senha + código de recuperação** no lugar de senha +
+TOTP, e o 409 passou a significar só `mfa_ativado=False`. Não há degradação de segurança:
+continuam sendo dois fatores, e o código de recuperação já é a credencial que pula o
+segundo fator no login — quem tem senha e código de recuperação já entra na conta. A
+ordem de verificação importa e está no código: a senha é conferida **primeiro**, porque
+consumir o código de recuperação antes dela faria um erro de digitação queimar um item de
+uma lista finita. **`/mfa/reemitir-codigos` continua respondendo 409**, por decisão e não
+por esquecimento: com o segredo ilegível o segundo fator está quebrado, e emitir oito
+códigos novos não devolve o app autenticador a ninguém — o caminho é desligar e religar
+com `/mfa/iniciar`.
+
 ### A migration de dados é obrigatória, e falha alto sem chave
 
 `f2b9d6e04a17` reescreve os segredos existentes. Com linhas para converter e sem chave,
@@ -264,6 +279,14 @@ pergunta de quem lê a tabela e vê três colunas hasheadas e uma cifrada.
 - **`/mfa/desativar` responde 409 para segredo ilegível**, como descrito nas
   consequências. Distinguir "sem MFA" de "MFA ilegível" no fluxo de gestão é trabalho
   futuro.
+  **Resolvido pela issue #39**: a rota aceita senha + código de recuperação enquanto o
+  segredo estiver ilegível, e o 409 ficou reservado a `mfa_ativado=False` (ver as
+  consequências). **O que sobra em aberto é o caso de borda**: quem perder a chave **e**
+  esgotar os códigos de recuperação continua trancado — não há rota administrativa que
+  desative o MFA de terceiro (`auth/usuarios_router.py` não expõe nada de MFA), e a saída
+  é intervenção direta no banco. Criar essa rota é decisão de outra natureza — quem
+  administra usuário passaria a poder desligar o segundo fator de outra pessoa — e
+  pertence à sua própria issue, com o ADR 0004 na mesa.
 - **Não há rotina de verificação da chave.** Ninguém confere periodicamente que
   `MFA_SECRET_KEYS` ainda abre o que está no banco; o primeiro sinal de chave errada é o
   `logger.error` de `db/cifra.py`, que só sai quando alguém tenta logar.
