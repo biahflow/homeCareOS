@@ -17,9 +17,9 @@ chamada.
 
 `usuario`/`usuario_id` são o **ator** — mesmo par, mesmo propósito e mesma
 razão de `usuario_id` ser nullable que `log_conferencia.usuario`/`usuario_id`
-(ver `db/models/log_conferencia.py:23-34`): `exigir_papel` deixa `X-API-Key`
-passar em qualquer papel (`auth/dependencies.py:115-129`), e uma chamada pela
-chave mestra tem `usuario_id=None` e `usuario="api"`
+(ver `db/models/log_conferencia.py:23-34`): `exigir_papel` deixa passar a
+`X-API-Key` que declara o papel exigido (`API_KEY_PAPEIS`, ADR 0007), e uma
+chamada pela chave tem `usuario_id=None` e `usuario="api"`
 (`auth/schema.ROTULO_MAQUINA`). Forjar um id nesse caso apontaria a auditoria
 para alguém que não agiu.
 

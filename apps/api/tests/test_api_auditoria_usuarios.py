@@ -48,7 +48,7 @@ from homecareos.config import Settings, get_settings
 from homecareos.db.models import AuditoriaUsuario, Usuario
 from homecareos.db.session import get_sessionmaker
 from homecareos.main import app
-from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.conftest import AUTH_HEADERS, TEST_API_KEY, TEST_API_KEY_PAPEIS
 
 pytestmark = pytest.mark.integration
 
@@ -147,6 +147,7 @@ def usuarios(sessao: Session, rastro: list[uuid.UUID]) -> dict[Papel, Usuario]:
 def _overrides(settings: Settings, **extra: object) -> Settings:
     base: dict[str, object] = {
         "api_keys": TEST_API_KEY,
+        "api_key_papeis": TEST_API_KEY_PAPEIS,
         "environment": "local",
         "login_atraso_base_segundos": 0.0,
         "login_atraso_maximo_segundos": 0.0,

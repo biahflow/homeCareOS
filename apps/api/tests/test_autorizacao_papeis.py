@@ -3,9 +3,8 @@
 Dois blocos:
 
 1. **Autorização** — exercita a matriz aprovada (ADR 0001) com um usuário de
-   cada papel, e trava a compatibilidade que a issue exige: `X-API-Key` passa em
-   todas as rotas, inclusive nas de papel restrito. Sem esse teste, alguém
-   "aperta" a chave um dia e derruba o cron de alertas em produção.
+   cada papel, e trava o escopo da `X-API-Key` (ADR 0007): a chave abre o que
+   `API_KEY_PAPEIS` declarar, e responde 403 no resto.
 2. **Auditoria** — o critério de aceite nº 1: duas pessoas diferentes
    transicionando pendências produzem duas linhas de `log_conferencia` com
    `usuario` distinto e o `usuario_id` correspondente.
@@ -19,7 +18,7 @@ próprios registros.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -45,7 +44,7 @@ from homecareos.db.models import (
 from homecareos.db.session import get_sessionmaker
 from homecareos.intake.router import get_document_storage
 from homecareos.main import app
-from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.conftest import AUTH_HEADERS, TEST_API_KEY, TEST_API_KEY_PAPEIS
 from tests.fakes import FakeStorage
 
 pytestmark = pytest.mark.integration
@@ -83,10 +82,39 @@ def settings() -> Settings:
 def api(settings: Settings) -> Iterator[TestClient]:
     """Cliente sem credencial nenhuma; `environment="local"` para o cookie não sair `Secure`."""
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
-        update={"api_keys": TEST_API_KEY, "environment": "local"}
+        update={
+            "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
+            "environment": "local",
+        }
     )
     try:
         yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def api_com_papeis(settings: Settings) -> Iterator[Callable[[str], TestClient]]:
+    """Cliente cujo `API_KEY_PAPEIS` o próprio teste escolhe (ADR 0007).
+
+    A fixture `api` acima fixa os três papéis, que é o que o resto do módulo
+    assume; esta existe para os testes do estreitamento, que precisam do escopo
+    vazio e do escopo parcial.
+    """
+
+    def construir(papeis: str) -> TestClient:
+        app.dependency_overrides[get_settings] = lambda: settings.model_copy(
+            update={
+                "api_keys": TEST_API_KEY,
+                "api_key_papeis": papeis,
+                "environment": "local",
+            }
+        )
+        return TestClient(app)
+
+    try:
+        yield construir
     finally:
         app.dependency_overrides.clear()
 
@@ -126,7 +154,11 @@ def clientes(
 ) -> Iterator[dict[Papel, TestClient]]:
     """Um `TestClient` por papel, cada um já com o cookie de sessão do seu login."""
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
-        update={"api_keys": TEST_API_KEY, "environment": "local"}
+        update={
+            "api_keys": TEST_API_KEY,
+            "api_key_papeis": TEST_API_KEY_PAPEIS,
+            "environment": "local",
+        }
     )
     try:
         logados = {}
@@ -340,17 +372,20 @@ def test_a_mensagem_do_403_nao_nomeia_o_papel_exigido(
         assert papel.value not in texto
 
 
-# --- compatibilidade: a chave de API continua passando em tudo -----------------
+# --- o escopo de papel da chave de API (ADR 0007) ------------------------------
 
 
-def test_x_api_key_passa_em_todas_as_rotas_de_papel_restrito(
+def test_x_api_key_com_os_tres_papeis_declarados_passa_nas_rotas_de_papel_restrito(
     api: TestClient, cenario: Cenario
 ) -> None:
-    """A compatibilidade que a issue exige, com teste para não ser quebrada por engano.
+    """A compatibilidade continua — quando DECLARADA em `API_KEY_PAPEIS`.
 
-    `X-API-Key` é a credencial máquina-a-máquina, e o cron
-    `python -m homecareos.alerts.scan` depende dela. Papel só filtra sessão de
-    usuário — ver `auth/dependencies.exigir_papel`.
+    Até o ADR 0007 a chave passava em qualquer `exigir_papel`, e a justificativa
+    registrada dizia que o cron `python -m homecareos.alerts.scan` dependia
+    disso. Não dependia: o cron fala direto com o banco e não faz requisição
+    HTTP nenhuma. Estas são as mesmas rotas do teste anterior ao ADR, e a
+    fixture `api` declara os três papéis (`tests/conftest.TEST_API_KEY_PAPEIS`)
+    — o acesso total virou configuração, e é isto que este teste prova.
     """
     assert api.get("/api/relatorios/conferencia", headers=AUTH_HEADERS).status_code == 200
     assert api.get("/api/relatorios/metricas", headers=AUTH_HEADERS).status_code == 200
@@ -377,6 +412,56 @@ def test_x_api_key_passa_em_todas_as_rotas_de_papel_restrito(
             headers=AUTH_HEADERS,
         ).status_code
         == 200
+    )
+
+
+def test_x_api_key_sem_papel_declarado_responde_403_nas_mesmas_rotas(
+    api_com_papeis: Callable[[str], TestClient], cenario: Cenario
+) -> None:
+    """`API_KEY_PAPEIS` vazio — o default — fecha a chave, e fecha com 403.
+
+    É a trava que o ADR 0007 acrescenta, e o status importa tanto quanto a
+    recusa: **403, nunca 401**. A credencial é válida (401 continua reservado a
+    chave ausente ou errada, indistinguível de cookie inválido); o que falta é
+    papel, e a mensagem é a mesma que uma pessoa sem papel recebe — sem nomear o
+    papel que faltou.
+    """
+    cliente = api_com_papeis("")
+
+    resposta = cliente.get("/api/regras", headers=AUTH_HEADERS)
+
+    assert resposta.status_code == 403
+    assert resposta.json()["error"]["mensagem"] == MENSAGEM_SEM_PERMISSAO
+    assert cliente.get("/api/alertas", headers=AUTH_HEADERS).status_code == 403
+    assert (
+        cliente.put(
+            "/api/relatorios/baseline",
+            json=_corpo_baseline(cenario.operadora.id),
+            headers=AUTH_HEADERS,
+        ).status_code
+        == 403
+    )
+
+
+def test_x_api_key_com_escopo_parcial_abre_so_o_papel_declarado(
+    api_com_papeis: Callable[[str], TestClient], cenario: Cenario
+) -> None:
+    """Escopo parcial é o caso que o ADR 0007 existe para permitir.
+
+    Com `API_KEY_PAPEIS=coordenador`, a chave alcança `/api/regras` (rota de
+    coordenador) e **não** escreve baseline (rota de gestor) — a mesma fronteira
+    que separa as duas pessoas, aplicada agora também à máquina.
+    """
+    cliente = api_com_papeis(Papel.COORDENADOR.value)
+
+    assert cliente.get("/api/regras", headers=AUTH_HEADERS).status_code == 200
+    assert (
+        cliente.put(
+            "/api/relatorios/baseline",
+            json=_corpo_baseline(cenario.operadora.id),
+            headers=AUTH_HEADERS,
+        ).status_code
+        == 403
     )
 
 

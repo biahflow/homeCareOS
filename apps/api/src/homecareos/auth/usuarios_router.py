@@ -46,7 +46,8 @@ nascer protegido por construção, sem depender de alguém lembrar de repetir a
 dependency. A recusa do papel `gestor` continua sendo do endpoint, porque ela é
 sobre o papel **atribuído**, não sobre quem chama.
 
-Como em todo o resto de `/api/*`, `X-API-Key` passa por `exigir_papel` (ver
+Como em todo o resto de `/api/*`, `X-API-Key` passa por `exigir_papel` quando
+`API_KEY_PAPEIS` declara `coordenador` (ADR 0007, ver
 `auth/dependencies.exigir_papel`). As travas que dependem de "quem chama"
 (item 3) não se aplicam à chave, que não tem "si mesmo"; as que dependem do
 estado do sistema — o papel `gestor` e o último coordenador ativo — valem para
@@ -173,9 +174,10 @@ def _recusar_esvaziar_a_coordenacao(
     Com sessão de usuário este caminho é, na prática, defesa em profundidade:
     quem chama é sempre um coordenador **ativo** (é o que `exigir_papel` deixa
     passar) e não pode agir sobre a própria conta, então sempre resta ele. Quem
-    alcança esta recusa é a chave de máquina (`X-API-Key`), que passa por
-    `exigir_papel` e não tem "si mesmo" — para ela, esta é a única trava. É por
-    isso que a verificação é contra o banco, e não contra o principal.
+    alcança esta recusa é a chave de máquina (`X-API-Key`) declarada como
+    `coordenador`, que passa por `exigir_papel` e não tem "si mesmo" — para ela,
+    esta é a única trava. É por isso que a verificação é contra o banco, e não
+    contra o principal.
     """
     if usuario.papel != Papel.COORDENADOR.value or not usuario.ativo:
         return

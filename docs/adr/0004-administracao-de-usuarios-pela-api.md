@@ -154,6 +154,12 @@ operação com um único coordenador não consegue desligá-lo pela API.
 - **`pendencia_responsavel_padrao` e o estreitamento da `X-API-Key`** continuam
   fora: a chave segue passando por qualquer checagem de papel, inclusive nestas
   rotas, e mudar isso é outra decisão com outro ADR (ADR 0001, item 3).
+  **O estreitamento foi resolvido pelo
+  [ADR 0007](0007-escopo-de-papel-da-chave-de-api.md)**: o que a chave abre
+  passa a ser declarado em `API_KEY_PAPEIS`, e ela só alcança estas rotas quando
+  declara `coordenador`. As travas contra o banco descritas no item 3 continuam
+  sendo a única proteção para ela, pela mesma razão de antes — a chave não tem
+  "si mesmo". `pendencia_responsavel_padrao` continua em aberto.
 
 ## Alternativas consideradas
 

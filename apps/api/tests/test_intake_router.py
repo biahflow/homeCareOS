@@ -35,7 +35,7 @@ from homecareos.intake.service import ACAO_EXTRACAO_FALHOU
 from homecareos.limites.dependencies import limitar
 from homecareos.limites.schema import Recurso
 from homecareos.main import app
-from tests.conftest import AUTH_HEADERS, TEST_API_KEY
+from tests.conftest import AUTH_HEADERS, TEST_API_KEY, TEST_API_KEY_PAPEIS
 from tests.fakes import (
     FailingDispatcher,
     FailingStorage,
@@ -76,7 +76,9 @@ def api(
     # docstring do módulo). `limitar` devolve sempre o mesmo objeto para o mesmo
     # recurso, e é isso que faz esta chave casar com a dependency da rota.
     app.dependency_overrides[limitar(Recurso.UPLOAD_DOCUMENTO)] = lambda: None
-    app.dependency_overrides[get_settings] = lambda: Settings(api_keys=TEST_API_KEY)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        api_keys=TEST_API_KEY, api_key_papeis=TEST_API_KEY_PAPEIS
+    )
     try:
         yield TestClient(app)
     finally:
@@ -178,7 +180,9 @@ def test_falha_de_extracao_ainda_responde_201(
     app.dependency_overrides[get_document_storage] = lambda: storage
     app.dependency_overrides[get_extraction_dispatcher] = lambda: FailingDispatcher()
     app.dependency_overrides[limitar(Recurso.UPLOAD_DOCUMENTO)] = lambda: None
-    app.dependency_overrides[get_settings] = lambda: Settings(api_keys=TEST_API_KEY)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        api_keys=TEST_API_KEY, api_key_papeis=TEST_API_KEY_PAPEIS
+    )
     try:
         resposta = _upload(TestClient(app), make_pdf(2))
     finally:
@@ -228,7 +232,7 @@ def test_arquivo_acima_do_limite_responde_413_sem_ler_o_corpo_inteiro(
 ) -> None:
     """O corte barato usa o tamanho declarado pelo parser multipart."""
     app.dependency_overrides[get_settings] = lambda: Settings(
-        max_upload_bytes=16, api_keys=TEST_API_KEY
+        max_upload_bytes=16, api_keys=TEST_API_KEY, api_key_papeis=TEST_API_KEY_PAPEIS
     )
 
     resposta = _upload(api, make_pdf(1))
@@ -257,7 +261,9 @@ def test_storage_indisponivel_responde_503(
     app.dependency_overrides[get_document_storage] = lambda: FailingStorage()
     app.dependency_overrides[get_extraction_dispatcher] = lambda: dispatcher
     app.dependency_overrides[limitar(Recurso.UPLOAD_DOCUMENTO)] = lambda: None
-    app.dependency_overrides[get_settings] = lambda: Settings(api_keys=TEST_API_KEY)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        api_keys=TEST_API_KEY, api_key_papeis=TEST_API_KEY_PAPEIS
+    )
     try:
         resposta = _upload(TestClient(app), make_pdf(1))
     finally:

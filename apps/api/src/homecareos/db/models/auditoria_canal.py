@@ -21,8 +21,8 @@ canal segue a mesma regra.
 
 `usuario`/`usuario_id` são rótulo legível mais identidade referencial, como em
 `log_conferencia` e `auditoria_usuarios`. O id é **nullable** porque
-`exigir_papel` deixa `X-API-Key` passar em qualquer papel
-(`auth/dependencies.py`): uma chamada pela chave mestra pode mudar canal, e ela
+`exigir_papel` deixa passar a `X-API-Key` que declara o papel exigido
+(`API_KEY_PAPEIS`, ADR 0007): uma chamada pela chave pode mudar canal, e ela
 sai com rótulo `"api"` (`auth.schema.ROTULO_MAQUINA`) e sem id. Forjar um id
 nesse caso apontaria a auditoria para alguém que não fez nada.
 

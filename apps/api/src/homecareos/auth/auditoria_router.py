@@ -12,9 +12,9 @@ trata, mas como router e arquivo próprios.
 
 A autorização é a mesma dos dados que ela expõe: só o **coordenador**, o papel
 que administra usuário (ADR 0004) — aplicada em `main.py`, no
-`include_router(...)`, como todo o resto de `/api/*`. `X-API-Key` passa por
-`exigir_papel` em qualquer papel, como em qualquer outra rota (ver
-`auth/dependencies.exigir_papel`).
+`include_router(...)`, como todo o resto de `/api/*`. `X-API-Key` só alcança
+esta leitura quando `API_KEY_PAPEIS` declara `coordenador` (ADR 0007) — como em
+qualquer outra rota, ver `auth/dependencies.exigir_papel`.
 """
 
 from __future__ import annotations
